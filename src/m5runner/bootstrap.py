@@ -169,6 +169,85 @@ def bootstrap_environment(
     return steps
 
 
+def setup_or_launch_windows_steam(
+    prefix_path: Path = DEFAULT_PREFIX,
+    dry_run: bool = False,
+) -> list[str]:
+    """Download/install Windows SteamSetup.exe into the prefix or launch steam.exe."""
+    actions: list[str] = []
+    steam_exe = prefix_path / "drive_c" / "Program Files (x86)" / "Steam" / "steam.exe"
+    installer_path = prefix_path / "drive_c" / "windows" / "temp" / "SteamSetup.exe"
+    wine_bin = find_wine_binary()
+
+    env = {
+        **dict(__import__("os").environ),
+        "WINEPREFIX": str(prefix_path),
+        "WINEMSYNC": "1",
+        "ROSETTA_ADVERTISE_AVX": "1",
+    }
+
+    if not steam_exe.exists():
+        actions.append(f"Download Windows SteamSetup.exe -> {installer_path}")
+        actions.append(f"Run `{wine_bin} {installer_path}` inside {prefix_path}")
+        if not dry_run:
+            installer_path.parent.mkdir(parents=True, exist_ok=True)
+            req = urllib.request.Request(
+                "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
+                headers={"User-Agent": "m5-wine-runner/0.1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                installer_path.write_bytes(resp.read())
+            subprocess.run([str(wine_bin), str(installer_path)], env=env, check=True)
+    else:
+        cmd = [
+            str(wine_bin),
+            str(steam_exe),
+            "-cef-disable-gpu-compositing",
+            "-no-cef-sandbox",
+        ]
+        actions.append(f"Launch Windows Steam inside prefix: {' '.join(cmd)}")
+        if not dry_run:
+            subprocess.run(cmd, env=env, check=False)
+
+    return actions
+
+
+def download_game_via_steamcmd(
+    app_id: int,
+    game_name: str,
+    install_dir: Path,
+    steam_user: str,
+    dry_run: bool = False,
+) -> list[str]:
+    """Download a Windows game depot on macOS using steamcmd."""
+    actions: list[str] = []
+    if not shutil.which("steamcmd"):
+        actions.append("Install steamcmd via Homebrew (`brew install --cask steamcmd`)")
+        if not dry_run:
+            subprocess.run(["brew", "install", "--cask", "steamcmd"], check=True)
+
+    cmd = [
+        "steamcmd",
+        "+@sSteamCmdForcePlatformType",
+        "windows",
+        "+force_install_dir",
+        str(install_dir),
+        "+login",
+        steam_user,
+        "+app_update",
+        str(app_id),
+        "validate",
+        "+quit",
+    ]
+    actions.append(f"Download {game_name} (AppID {app_id}) -> {install_dir}")
+    actions.append(f"Command: {' '.join(cmd)}")
+    if not dry_run:
+        install_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(cmd, check=True)
+
+    return actions
+
+
 def _install_latest_dxmt() -> Path:
     """Download the latest dxmt-v*-builtin.tar.gz release from 3Shain/dxmt and extract it."""
     api_url = "https://api.github.com/repos/3Shain/dxmt/releases/latest"

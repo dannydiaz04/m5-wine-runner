@@ -165,6 +165,8 @@ def test_create_macos_app_bundle(tmp_path: Path) -> None:
 def test_cli_dry_run_commands() -> None:
     assert main(["list"]) == 0
     assert main(["doctor"]) == 0
+    assert main(["steam", "--dry-run"]) == 0
+    assert main(["download", "sekiro", "--user", "testuser", "--dry-run"]) == 0
     assert main(["launch", "witcher3", "--dry-run"]) == 0
     assert main(["launch", "mhwilds", "--dry-run"]) == 0
     assert main(["launch", "doom-dark-ages", "--dry-run"]) == 0

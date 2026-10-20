@@ -16,10 +16,12 @@ from m5runner.backends import (
 )
 from m5runner.bootstrap import (
     bootstrap_environment,
+    download_game_via_steamcmd,
     import_gptk_d3dmetal,
     run_doctor,
+    setup_or_launch_windows_steam,
 )
-from m5runner.config import APPLICATIONS_DIR, SCRIPTS_DIR
+from m5runner.config import APPLICATIONS_DIR, DEFAULT_PREFIX, SCRIPTS_DIR
 from m5runner.patchers import run_profile_hooks
 from m5runner.profiles import VALID_BACKENDS, load_profiles
 
@@ -173,6 +175,51 @@ def _cmd_create_apps(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_steam(args: argparse.Namespace) -> int:
+    actions = setup_or_launch_windows_steam(prefix_path=DEFAULT_PREFIX, dry_run=args.dry_run)
+    prefix = "[DRY-RUN] " if args.dry_run else ""
+    for act in actions:
+        print(f"{prefix}- {act}")
+    return 0
+
+
+def _cmd_download(args: argparse.Namespace) -> int:
+    profiles = load_profiles()
+    if args.game not in profiles:
+        print(f"Unknown game slug '{args.game}'. Run 'm5runner list' to view valid slugs.", file=sys.stderr)
+        return 1
+    profile = profiles[args.game]
+    if not profile.steam_app_id:
+        print(f"No Steam AppID configured for {profile.name}.", file=sys.stderr)
+        return 1
+
+    default_dir_name = profile.name.replace(":", "").strip()
+    install_dir = (
+        Path(args.install_dir).expanduser()
+        if args.install_dir
+        else (
+            profile.prefix_path
+            / "drive_c"
+            / "Program Files (x86)"
+            / "Steam"
+            / "steamapps"
+            / "common"
+            / default_dir_name
+        )
+    )
+    actions = download_game_via_steamcmd(
+        app_id=profile.steam_app_id,
+        game_name=profile.name,
+        install_dir=install_dir,
+        steam_user=args.user,
+        dry_run=args.dry_run,
+    )
+    prefix = "[DRY-RUN] " if args.dry_run else ""
+    for act in actions:
+        print(f"{prefix}- {act}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="m5runner",
@@ -236,6 +283,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_apps.add_argument("--no-hud", action="store_true", help="Disable Metal HUD by default in .app wrapper")
     p_apps.add_argument("--dry-run", action="store_true", help="Preview .app bundle creation")
     p_apps.set_defaults(func=_cmd_create_apps)
+
+    # steam
+    p_steam = sub.add_parser("steam", help="Install or launch Windows Steam inside default_prefix")
+    p_steam.add_argument("--dry-run", action="store_true", help="Preview Windows Steam setup/launch")
+    p_steam.set_defaults(func=_cmd_steam)
+
+    # download
+    p_dl = sub.add_parser("download", help="Download a Windows game depot into the prefix via steamcmd")
+    p_dl.add_argument("game", help="Game slug (e.g., sekiro, witcher3, elden-ring)")
+    p_dl.add_argument("--user", required=True, help="Your Steam username")
+    p_dl.add_argument("--install-dir", help="Optional custom target directory")
+    p_dl.add_argument("--dry-run", action="store_true", help="Preview steamcmd download command")
+    p_dl.set_defaults(func=_cmd_download)
 
     return parser
 

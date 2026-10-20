@@ -65,12 +65,17 @@ uv run m5runner bootstrap --with-xiv
 # 4. Import Apple's D3DMetal (GPTK 3/4) from a downloaded Evaluation Environment DMG
 uv run m5runner import-gptk ~/Downloads/Evaluation_environment_for_Windows_games.dmg
 
-# 5. Preview or launch any game (supports --backend dxmt|d3dmetal and --no-hud)
+# 5. Download a Windows game via steamcmd (or install/launch Windows Steam GUI)
+uv run m5runner download sekiro --user <your_steam_username>
+# OR launch Windows Steam inside the prefix:
+uv run m5runner steam
+
+# 6. Preview or launch any game (supports --backend dxmt|d3dmetal and --no-hud)
 uv run m5runner launch witcher3 --dry-run
 uv run m5runner launch rdr2 --dry-run
 uv run m5runner launch witcher3 --backend dxmt --dry-run
 
-# 6. Generate macOS .app bundles in ~/Applications
+# 7. Generate macOS .app bundles in ~/Applications
 uv run m5runner create-apps --all
 ```
 
