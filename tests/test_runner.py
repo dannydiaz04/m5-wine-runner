@@ -62,7 +62,7 @@ def test_build_execution_environment_m5_defaults() -> None:
     assert env_dx12["ROSETTA_ADVERTISE_AVX"] == "1"
     assert env_dx12["D3DM_ENABLE_METALFX"] == "1"
     assert env_dx12["MTL_HUD_ENABLED"] == "1"
-    assert "d3d11,d3d12,dxgi" in env_dx12["WINEDLLOVERRIDES"]
+    assert "d3d11,d3d12,d3d12core,dxgi" in env_dx12["WINEDLLOVERRIDES"]
     assert env_dx12["M5RUNNER_ACTIVE_BACKEND"] == "d3dmetal"
 
     env_dx11 = build_execution_environment(witcher, backend_override="dxmt", enable_hud=False, base_env={})

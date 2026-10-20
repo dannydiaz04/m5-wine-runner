@@ -115,6 +115,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
     )
 
     # 3. Handle XIV on Mac native delegation
+    launch_cwd: Path | None = None
     if active_backend == "xivmac":
         cmd = ["open", "-a", "XIV on Mac"]
     else:
@@ -123,6 +124,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
             backend_override=active_backend,
             explicit_dir=game_dir,
         )
+        launch_cwd = target_exe.parent if target_exe.parent.exists() else None
         cmd = [str(wine_bin), str(target_exe), *profile.launch_args, *args.extra_args]
 
     print(f"=== Launching {profile.name} [{active_backend}] ===")
@@ -144,13 +146,15 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         if k in env:
             print(f'  export {k}="{env[k]}"')
 
+    if launch_cwd:
+        print(f"\nWorking Directory:\n  {launch_cwd}")
     print(f"\nCommand:\n  {shlex.join(cmd)}")
 
     if args.dry_run:
         return 0
 
     try:
-        return subprocess.call(cmd, env=env)
+        return subprocess.call(cmd, env=env, cwd=launch_cwd)
     finally:
         if "cleanup_jedi_survivor_ea_and_mem" in profile.hooks:
             wineserver = find_wine_binary().parent / "wineserver"

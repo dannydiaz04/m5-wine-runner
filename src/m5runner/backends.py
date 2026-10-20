@@ -75,6 +75,7 @@ def build_execution_environment(
     dll_overrides: dict[str, str] = {
         "d3d11": "n,b",
         "d3d12": "n,b",
+        "d3d12core": "n,b",
         "dxgi": "n,b",
     }
     dll_overrides.update(profile.dll_overrides)
