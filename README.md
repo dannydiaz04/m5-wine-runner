@@ -81,6 +81,13 @@ uv run m5runner create-apps --all
 
 ---
 
+## Documentation for Developers & AI Agents
+
+- **[AGENTS.md](AGENTS.md)**: Complete operational playbook for humans and AI coding agents — directory architecture, end-to-end game download/launch commands, and a 5-step checklist for porting any new game into `m5-wine-runner`.
+- **[docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md)**: Deep-dive technical reference on D3DMetal 4.0 Beta 3, DXMT v0.80, MoltenVK Ray Tracing, DLSS-to-MetalFX registry spoofing, and common translation-layer fixes.
+
+---
+
 ## Testing
 
 ```bash
