@@ -1,0 +1,23 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+*.dmg
+*.pkg
+*.tar.xz
+*.tar.gz
+
+# Local runtime overrides / logs
+logs/
+prefixes/
+sdk/
+mods_cache/

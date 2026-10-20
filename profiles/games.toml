@@ -1,0 +1,299 @@
+# M5 Max (128GB) Unified Game Profile Registry
+# Supported backends:
+#   - d3dmetal       : Apple Game Porting Toolkit (D3DMetal 3/4) for DX12 + DLSS-to-MetalFX
+#   - d3dmetal_gptk4 : Enforces GPTK 4.0+ D3DMetal (Decima / RE Engine Wilds fixes)
+#   - dxmt           : 3Shain/dxmt native DirectX 10/11-to-Metal translation layer
+#   - moltenvk_rt    : Custom compiled MoltenVK with VK_KHR_ray_query / ray_tracing_pipeline
+#   - xivmac         : Native XIV on Mac Swift wrapper (bundles Wine + DXMT + Dalamud)
+
+[games.ffxiv]
+name = "Final Fantasy XIV"
+tier = "Tier 1: Zero Lift"
+engine = "Custom (DX11)"
+backend = "xivmac"
+alt_backends = ["dxmt"]
+prefix = "default_prefix"
+steam_app_id = 39210
+exe_rel_paths = [
+    "game/ffxiv_dx11.exe",
+    "boot/ffxivboot.exe",
+]
+launch_args = []
+winetricks = []
+dlss_metalfx = false
+require_avx = false
+dll_overrides = { d3d11 = "n,b", dxgi = "n,b" }
+env = {}
+hooks = ["launch_xiv_on_mac"]
+notes = "Delegates to XIV on Mac (https://www.xivmac.com/) to handle Square Enix encrypted OAuth launcher token flow with native DXMT."
+
+[games.sekiro]
+name = "Sekiro: Shadows Die Twice"
+tier = "Tier 1: Low Lift"
+engine = "FromSoftware (DX11)"
+backend = "dxmt"
+alt_backends = ["d3dmetal"]
+prefix = "default_prefix"
+steam_app_id = 814380
+exe_rel_paths = [
+    "sekiro.exe",
+]
+launch_args = []
+winetricks = []
+dlss_metalfx = false
+require_avx = false
+dll_overrides = { d3d11 = "n,b", dxgi = "n,b", xinput1_3 = "n,b", dinput8 = "n,b" }
+env = {}
+hooks = ["configure_sekiro_input"]
+notes = "Runs via DXMT at locked 60 FPS (or 120+ FPS with sekirofpsunlockandmore). Overrides xinput1_3 to prevent wireless controller drop."
+
+[games.pragmata]
+name = "Pragmata"
+tier = "Tier 1: Low Lift"
+engine = "RE Engine (DX12)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 1335500
+exe_rel_paths = [
+    "Pragmata.exe",
+    "pragmata.exe",
+]
+launch_args = []
+winetricks = []
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+env = { GST_PLUGIN_FEATURE_RANK = "vtdec:MAX" }
+hooks = ["ensure_gstreamer_codecs"]
+notes = "Capcom RE Engine DX12 title; runs cleanly on D3DMetal with WINEMSYNC=1, ROSETTA_ADVERTISE_AVX=1, and MetalFX Quality."
+
+[games.witcher3]
+name = "The Witcher 3: Wild Hunt - Complete Edition"
+tier = "Tier 1: Low Lift"
+engine = "REDengine 4 (DX11/DX12)"
+backend = "d3dmetal"
+alt_backends = ["dxmt"]
+prefix = "default_prefix"
+steam_app_id = 292030
+exe_rel_paths = [
+    "bin/x64_dx12/witcher3.exe",
+    "bin/x64/witcher3.exe",
+]
+dx11_exe_rel_path = "bin/x64/witcher3.exe"
+dx12_exe_rel_path = "bin/x64_dx12/witcher3.exe"
+launch_args = ["--launcher-skip"]
+winetricks = []
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d11 = "n,b", d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+env = {}
+hooks = ["select_witcher3_binary"]
+notes = "Bypasses REDlauncher CEF hang via --launcher-skip. Uses D3DMetal on bin/x64_dx12/witcher3.exe for HW Ray Tracing + MetalFX, or DXMT on bin/x64/witcher3.exe for peak raster FPS."
+
+[games.elden-ring]
+name = "Elden Ring"
+tier = "Tier 2: Low-Medium Lift"
+engine = "FromSoftware (DX12)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 1245620
+exe_rel_paths = [
+    "Game/eldenring.exe",
+    "Game/ersc_launcher.exe",
+    "Game/start_protected_game.exe",
+]
+launch_args = []
+winetricks = []
+dlss_metalfx = false
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b" }
+env = {}
+hooks = ["bypass_eac_elden_ring"]
+notes = "Automates Easy Anti-Cheat (start_protected_game.exe) backup/replacement and steam_appid.txt (1245620) creation, with automatic Seamless Co-op (ersc_launcher.exe) detection."
+
+[games.stellar-blade]
+name = "Stellar Blade"
+tier = "Tier 2: Low-Medium Lift"
+engine = "Unreal Engine 4 (DX12)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 3489700
+exe_rel_paths = [
+    "SB/Binaries/Win64/SB-Win64-Shipping.exe",
+    "StellarBlade.exe",
+]
+launch_args = ["-dx12"]
+winetricks = ["vcrun2022"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+env = {}
+hooks = ["spoof_nvidia_dlss_registry"]
+notes = "Requires vcrun2022 and NVIDIA PCI ID / NGX registry spoofing so in-game menus unlock DLSS & Frame Generation translated to Apple MetalFX."
+
+[games.gow-ragnarok]
+name = "God of War Ragnarok"
+tier = "Tier 2: Medium Lift"
+engine = "Jetpack / Santa Monica (DX12)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 2322010
+exe_rel_paths = [
+    "GoWR.exe",
+]
+launch_args = []
+winetricks = ["vcrun2022"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b", PsPcSdk = "n,b" }
+env = { ROSETTA_ADVERTISE_AVX = "1" }
+hooks = ["stub_pspcsdk_gow_ragnarok", "spoof_nvidia_dlss_registry"]
+notes = "Mandates ROSETTA_ADVERTISE_AVX=1 for F16C/AVX2 instructions on boot and stubs/installs Sony PlayStation PC SDK (PsPcSdk.dll)."
+
+[games.horizon-fw]
+name = "Horizon Forbidden West"
+tier = "Tier 2: Medium Lift"
+engine = "Decima (DX12)"
+backend = "d3dmetal_gptk4"
+alt_backends = ["d3dmetal"]
+prefix = "default_prefix"
+steam_app_id = 2420110
+exe_rel_paths = [
+    "HorizonForbiddenWest.exe",
+]
+launch_args = []
+winetricks = ["vcrun2022"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+env = { ROSETTA_ADVERTISE_AVX = "1" }
+hooks = ["enforce_horizon_stereo_and_gptk4", "spoof_nvidia_dlss_registry"]
+notes = "Requires GPTK 4.0+ D3DMetal to prevent Decima fast-travel crashes and memory leaks. Forces stereo audio layout so dialogue is never muted."
+
+[games.mgs-delta]
+name = "Metal Gear Solid Delta: Snake Eater"
+tier = "Tier 2: Medium Lift"
+engine = "Unreal Engine 5 (DX12)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 2417610
+exe_rel_paths = [
+    "MGSDelta/Binaries/Win64/MGSDelta-Win64-Shipping.exe",
+    "MGSDelta.exe",
+]
+launch_args = ["-dx12"]
+winetricks = ["vcrun2022"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+env = {}
+hooks = ["seed_mgs_delta_config", "spoof_nvidia_dlss_registry"]
+notes = "Pre-populates Saved/Config/Windows/ INI files to prevent UE5 config serialization failures and parachute cutscene crashes on builds prior to v1.2.4."
+
+[games.rdr2]
+name = "Red Dead Redemption 2"
+tier = "Tier 2: Medium Lift"
+engine = "RAGE (DX12 / Vulkan)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 1174180
+exe_rel_paths = [
+    "RDR2.exe",
+    "PlayRDR2.exe",
+]
+launch_args = ["-sgadriver=d3d12"]
+winetricks = ["vcrun2022"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+env = {}
+hooks = ["patch_rdr2_settings_and_launcher", "spoof_nvidia_dlss_registry"]
+notes = "Rewrites Documents/Rockstar Games/Red Dead Redemption 2/Settings/system.xml to kSettingAPI_DX12, passes -sgadriver=d3d12, and cleans up zombie SocialClubHelper.exe processes."
+
+[games.jedi-survivor]
+name = "Star Wars Jedi: Survivor"
+tier = "Tier 2: Medium Lift"
+engine = "Unreal Engine 4 (DX12)"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+prefix = "default_prefix"
+steam_app_id = 1774580
+exe_rel_paths = [
+    "SwGame/Binaries/Win64/JediSurvivor.exe",
+]
+launch_args = ["-dx12"]
+winetricks = ["vcrun2022", "d3dcompiler_47"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", d3dcompiler_47 = "n,b", nvngx = "n,b" }
+env = {}
+hooks = ["cleanup_jedi_survivor_ea_and_mem", "spoof_nvidia_dlss_registry"]
+notes = "Kills corrupted EABackgroundService.exe zombies pre-launch and flushes Wine server memory post-exit (128GB unified RAM absorbs the 20-30GB D3DMetal leak during multi-hour sessions)."
+
+[games.dmc4]
+name = "Devil May Cry 4 Special Edition"
+tier = "Tier 3: Medium-High Lift"
+engine = "MT Framework (32-bit DX9/DX10)"
+backend = "dxmt"
+alt_backends = ["d3dmetal"]
+prefix = "legacy_wow64"
+steam_app_id = 329050
+exe_rel_paths = [
+    "DevilMayCry4SpecialEdition.exe",
+    "DMC4_DX10.exe",
+    "DMC4_DX9.exe",
+]
+launch_args = []
+winetricks = ["wmp11", "quartz", "devenum"]
+dlss_metalfx = false
+require_avx = false
+dll_overrides = { d3d10core = "n,b", d3d11 = "n,b", dxgi = "n,b", wmvcore = "n,b", quartz = "n,b" }
+env = {}
+hooks = ["prepare_dmc4_wmv_codecs"]
+notes = "Uses Wine 11 WoW64 prefix with wmp11/quartz/devenum and optional WMV intro bypass to prevent post-Capcom-logo Media Foundation crashes."
+
+[games.mhwilds]
+name = "Monster Hunter Wilds"
+tier = "Tier 3: High Lift"
+engine = "RE Engine (DX12)"
+backend = "d3dmetal_gptk4"
+alt_backends = ["d3dmetal"]
+prefix = "default_prefix"
+steam_app_id = 2246340
+exe_rel_paths = [
+    "MonsterHunterWilds.exe",
+]
+launch_args = []
+winetricks = ["vcrun2022"]
+dlss_metalfx = true
+require_avx = true
+dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b", dinput8 = "n,b" }
+env = { ROSETTA_ADVERTISE_AVX = "1" }
+hooks = ["inject_reframework_mhwilds", "spoof_nvidia_dlss_registry"]
+notes = "Requires GPTK 4.0+ D3DMetal and injects REFramework (dinput8.dll) with dinput8=n,b to bypass anti-tamper hangs and compute shader initialization crashes."
+
+[games.doom-dark-ages]
+name = "DOOM: The Dark Ages"
+tier = "Tier 3: Very High Lift"
+engine = "id Tech 8 (Vulkan + Mandatory HW Ray Tracing)"
+backend = "moltenvk_rt"
+alt_backends = []
+prefix = "default_prefix"
+steam_app_id = 3017860
+exe_rel_paths = [
+    "DOOMTheDarkAges.exe",
+]
+launch_args = []
+winetricks = ["vcrun2022"]
+dlss_metalfx = false
+require_avx = true
+dll_overrides = { winevulkan = "b" }
+env = { ROSETTA_ADVERTISE_AVX = "1", MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS = "1", MVK_CONFIG_RESUME_LOST_DEVICE = "1", MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS = "0" }
+hooks = ["verify_moltenvk_rt"]
+notes = "Requires custom compiled MoltenVK with experimental Hardware Ray Tracing (VK_KHR_ray_query / VK_KHR_ray_tracing_pipeline / VK_KHR_acceleration_structure) isolated in ~/Games/sdk/moltenvk-rt."

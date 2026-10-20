@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "m5-wine-runner"
+version = "0.1.0"
+description = "Unified Wine / D3DMetal 4 / DXMT / MoltenVK-RT translation layer game runner for Apple M5 Max (128GB)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Daniel Diaz" }
+]
+dependencies = []
+
+[project.scripts]
+m5runner = "m5runner.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/m5runner"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+managed = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
