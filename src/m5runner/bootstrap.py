@@ -66,13 +66,13 @@ def run_doctor() -> dict[str, dict[str, str | bool]]:
     }
 
     # 6. DXMT Backend check
-    dxmt_dll = _find_first(
-        [
-            DXMT_SDK_DIR / "x86_64-windows" / "d3d11.dll",
-            DXMT_SDK_DIR / "lib" / "wine" / "x86_64-windows" / "d3d11.dll",
-            DXMT_SDK_DIR / "d3d11.dll",
-        ]
-    )
+    dxmt_candidates = [
+        DXMT_SDK_DIR / "x86_64-windows" / "d3d11.dll",
+        DXMT_SDK_DIR / "lib" / "wine" / "x86_64-windows" / "d3d11.dll",
+        DXMT_SDK_DIR / "d3d11.dll",
+        *sorted(DXMT_SDK_DIR.glob("v*/x86_64-windows/d3d11.dll"), reverse=True),
+    ]
+    dxmt_dll = _find_first(dxmt_candidates)
     report["dxmt"] = {
         "ok": dxmt_dll is not None,
         "detail": str(dxmt_dll) if dxmt_dll else f"Missing (run 'm5runner bootstrap' -> {DXMT_SDK_DIR})",
@@ -81,8 +81,11 @@ def run_doctor() -> dict[str, dict[str, str | bool]]:
     # 7. Apple D3DMetal (GPTK 3/4) check
     d3dmetal_bin = _find_first(
         [
+            D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework" / "Versions" / "A" / "D3DMetal",
+            D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework" / "D3DMetal",
             D3DMETAL_SDK_DIR / "D3DMetal.framework" / "Versions" / "A" / "D3DMetal",
             D3DMETAL_SDK_DIR / "D3DMetal.framework" / "D3DMetal",
+            D3DMETAL_SDK_DIR / "wine" / "x86_64-windows" / "d3d12.dll",
             D3DMETAL_SDK_DIR / "windows" / "system32" / "d3d12.dll",
             D3DMETAL_SDK_DIR / "d3d12.dll",
         ]
@@ -275,6 +278,15 @@ def _install_latest_dxmt() -> Path:
     with tarfile.open(archive_path, "r:gz") as tf:
         tf.extractall(path=DXMT_SDK_DIR, filter="data")
 
+    # Flatten versioned subdirectory (e.g. v0.80/{x86_64-unix,x86_64-windows,i386-windows})
+    for ver_dir in sorted(DXMT_SDK_DIR.glob("v*")):
+        if ver_dir.is_dir():
+            for sub in ver_dir.iterdir():
+                dst = DXMT_SDK_DIR / sub.name
+                if dst.exists():
+                    shutil.rmtree(dst) if dst.is_dir() else dst.unlink()
+                shutil.copytree(sub, dst) if sub.is_dir() else shutil.copy2(sub, dst)
+
     return DXMT_SDK_DIR
 
 
@@ -319,56 +331,117 @@ def _install_latest_gcenx_wine() -> Path:
     return WINE_SDK_DIR
 
 
+def _attach_dmg(dmg_path: Path) -> Path:
+    """Attach a DMG read-only and return its /Volumes/... mount point."""
+    out = subprocess.check_output(
+        ["hdiutil", "attach", "-nobrowse", "-readonly", str(dmg_path)],
+        text=True,
+    )
+    for line in out.splitlines():
+        if "/Volumes/" in line:
+            return Path(line[line.index("/Volumes/") :].strip())
+    raise RuntimeError(f"Failed to determine mount point for {dmg_path}")
+
+
 def import_gptk_d3dmetal(source_path: Path, dry_run: bool = False) -> list[str]:
-    """Extract D3DMetal.framework and redistribution libraries from an Apple GPTK DMG or directory."""
+    """Extract D3DMetal.framework and redistribution libraries from an Apple GPTK DMG or directory.
+
+    Supports both outer `Game_Porting_Toolkit_*.dmg` (which contains a nested
+    `Evaluation environment for Windows games *.dmg`) and direct `Evaluation environment*.dmg`.
+    """
     actions: list[str] = []
     if not source_path.exists():
         raise FileNotFoundError(f"GPTK source not found: {source_path}")
 
     if dry_run:
-        actions.append(f"Mount/inspect {source_path} and copy D3DMetal.framework + redist/lib into {D3DMETAL_SDK_DIR}")
+        actions.append(
+            f"Mount/inspect {source_path} (including nested Evaluation Environment DMG) and copy redist/lib into {D3DMETAL_SDK_DIR}"
+        )
         return actions
 
     ensure_runtime_dirs()
-    mounted_vol: Path | None = None
+    mounted_volumes: list[Path] = []
 
     try:
         if source_path.suffix.lower() == ".dmg":
-            out = subprocess.check_output(
-                ["hdiutil", "attach", "-nobrowse", "-readonly", str(source_path)],
-                text=True,
+            outer_vol = _attach_dmg(source_path)
+            mounted_volumes.append(outer_vol)
+            search_root = outer_vol
+
+            # Check for nested "Evaluation environment for Windows games *.dmg"
+            nested_dmgs = list(outer_vol.glob("*Evaluation environment*.dmg")) + list(
+                outer_vol.glob("*/*.dmg")
             )
-            for line in out.splitlines():
-                if "/Volumes/" in line:
-                    mounted_vol = Path(line[line.index("/Volumes/") :].strip())
-                    break
-            search_root = mounted_vol or source_path
+            if nested_dmgs:
+                inner_vol = _attach_dmg(nested_dmgs[0])
+                mounted_volumes.append(inner_vol)
+                search_root = inner_vol
+                actions.append(f"Mounted nested image: {nested_dmgs[0].name} -> {inner_vol}")
         else:
             search_root = source_path
 
-        # Copy redist/lib or D3DMetal.framework if present
-        for candidate in search_root.rglob("D3DMetal.framework"):
-            dst_fw = D3DMETAL_SDK_DIR / "D3DMetal.framework"
-            if dst_fw.exists():
-                shutil.rmtree(dst_fw)
-            shutil.copytree(candidate, dst_fw, symlinks=True)
-            actions.append(f"Extracted {candidate} -> {dst_fw}")
-            break
+        # 1. If standard GPTK `redist/lib` layout exists, copy `external` and `wine` trees intact
+        redist_lib = search_root / "redist" / "lib"
+        if redist_lib.exists():
+            for subdir_name in ("external", "wine"):
+                src_sub = redist_lib / subdir_name
+                if src_sub.exists():
+                    dst_sub = D3DMETAL_SDK_DIR / subdir_name
+                    if dst_sub.exists():
+                        shutil.rmtree(dst_sub)
+                    shutil.copytree(src_sub, dst_sub, symlinks=True)
+                    actions.append(f"Extracted {src_sub} -> {dst_sub}")
 
-        for dll_name in ("d3d11.dll", "d3d12.dll", "dxgi.dll", "nvngx.dll", "_nvngx.dll", "libd3dshared.dylib"):
-            for match in search_root.rglob(dll_name):
-                dst = D3DMETAL_SDK_DIR / match.name
-                shutil.copy2(match, dst)
-                actions.append(f"Extracted {match.name} -> {dst}")
+            # Also expose top-level D3DMetal.framework symlink/copy for compatibility
+            ext_fw = D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework"
+            top_fw = D3DMETAL_SDK_DIR / "D3DMetal.framework"
+            if ext_fw.exists():
+                if top_fw.exists() or top_fw.is_symlink():
+                    shutil.rmtree(top_fw) if top_fw.is_dir() and not top_fw.is_symlink() else top_fw.unlink()
+                top_fw.symlink_to(ext_fw)
+
+            # Copy external/{D3DMetal.framework, libd3dshared.dylib} into Wine SDK's lib/external
+            if (WINE_SDK_DIR / "lib").exists() and (D3DMETAL_SDK_DIR / "external").exists():
+                wine_ext = WINE_SDK_DIR / "lib" / "external"
+                if wine_ext.exists():
+                    shutil.rmtree(wine_ext)
+                shutil.copytree(D3DMETAL_SDK_DIR / "external", wine_ext, symlinks=True)
+                actions.append(f"Linked GPTK 4 external libraries into Wine runtime: {wine_ext}")
+        else:
+            # Fallback recursive search for custom extracted directories
+            for candidate in search_root.rglob("D3DMetal.framework"):
+                dst_fw = D3DMETAL_SDK_DIR / "D3DMetal.framework"
+                if dst_fw.exists():
+                    shutil.rmtree(dst_fw)
+                shutil.copytree(candidate, dst_fw, symlinks=True)
+                actions.append(f"Extracted {candidate} -> {dst_fw}")
                 break
+
+            for dll_name in (
+                "d3d10.dll",
+                "d3d11.dll",
+                "d3d12.dll",
+                "d3d12core.dll",
+                "dxgi.dll",
+                "nvapi64.dll",
+                "nvngx.dll",
+                "nvngx-on-metalfx.dll",
+                "libd3dshared.dylib",
+            ):
+                for match in search_root.rglob(dll_name):
+                    dst = D3DMETAL_SDK_DIR / match.name
+                    shutil.copy2(match, dst)
+                    actions.append(f"Extracted {match.name} -> {dst}")
+                    break
 
         subprocess.run(
             ["/usr/bin/xattr", "-drs", "com.apple.quarantine", str(D3DMETAL_SDK_DIR)],
             check=False,
         )
     finally:
-        if mounted_vol and mounted_vol.exists():
-            subprocess.run(["hdiutil", "detach", str(mounted_vol)], check=False, capture_output=True)
+        for vol in reversed(mounted_volumes):
+            if vol.exists():
+                subprocess.run(["hdiutil", "detach", str(vol)], check=False, capture_output=True)
 
     return actions
 

@@ -82,11 +82,13 @@ def build_execution_environment(
     wine_lib_dir = find_wine_binary().parent.parent / "lib"
 
     if active_backend in ("d3dmetal", "d3dmetal_gptk4"):
-        d3dm_fw_lib = D3DMETAL_SDK_DIR / "D3DMetal.framework" / "Versions" / "A" / "Libraries"
+        d3dm_fw_lib = D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework" / "Versions" / "A" / "Libraries"
         dyld_paths = [
             str(d3dm_fw_lib),
             str(D3DMETAL_SDK_DIR / "external"),
+            str(D3DMETAL_SDK_DIR / "D3DMetal.framework" / "Versions" / "A" / "Libraries"),
             str(D3DMETAL_SDK_DIR),
+            str(wine_lib_dir / "external"),
             str(wine_lib_dir),
             "/usr/lib",
         ]
@@ -95,6 +97,7 @@ def build_execution_environment(
         if profile.dlss_metalfx:
             dll_overrides.setdefault("nvngx", "n,b")
             dll_overrides.setdefault("_nvngx", "n,b")
+            dll_overrides.setdefault("nvapi64", "n,b")
 
     elif active_backend == "dxmt":
         # DXMT uses native d3d10core.dll, d3d11.dll, dxgi.dll + winemetal
@@ -147,10 +150,21 @@ def stage_backend_dlls_into_prefix(
 
     if active_backend in ("d3dmetal", "d3dmetal_gptk4"):
         source_dirs = [
+            D3DMETAL_SDK_DIR / "wine" / "x86_64-windows",
             D3DMETAL_SDK_DIR / "windows" / "system32",
             D3DMETAL_SDK_DIR,
         ]
-        dll_names = ["d3d11.dll", "d3d12.dll", "dxgi.dll", "nvngx.dll", "_nvngx.dll"]
+        dll_names = [
+            "d3d10.dll",
+            "d3d11.dll",
+            "d3d12.dll",
+            "d3d12core.dll",
+            "dxgi.dll",
+            "nvapi64.dll",
+            "nvngx.dll",
+            "nvngx-on-metalfx.dll",
+            "_nvngx.dll",
+        ]
         for dll in dll_names:
             for sdir in source_dirs:
                 src = sdir / dll
@@ -160,20 +174,39 @@ def stage_backend_dlls_into_prefix(
                     if not dry_run:
                         sys32_dir.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, dst)
+                        # Also alias nvngx-on-metalfx.dll -> nvngx.dll & _nvngx.dll for DLSS games
+                        if dll == "nvngx-on-metalfx.dll":
+                            shutil.copy2(src, sys32_dir / "nvngx.dll")
+                            shutil.copy2(src, sys32_dir / "_nvngx.dll")
                     break
 
+        # Also stage GPTK unix .so bridges into Wine's lib/wine/x86_64-unix if present
+        unix_src_dir = D3DMETAL_SDK_DIR / "wine" / "x86_64-unix"
+        wine_unix_dst = WINE_SDK_DIR / "lib" / "wine" / "x86_64-unix"
+        if unix_src_dir.exists() and wine_unix_dst.exists():
+            for so_file in sorted(unix_src_dir.glob("*.so")):
+                actions.append(f"Stage D3DMetal Unix bridge {so_file.name} -> {wine_unix_dst / so_file.name}")
+                if not dry_run:
+                    shutil.copy2(so_file, wine_unix_dst / so_file.name)
+
     elif active_backend == "dxmt":
-        # 3Shain/dxmt builtin archive provides x86_64-windows and i386-windows
+        # 3Shain/dxmt builtin archive provides x86_64-windows, i386-windows, and x86_64-unix
         x64_src_dirs = [
             DXMT_SDK_DIR / "x86_64-windows",
+            *sorted(DXMT_SDK_DIR.glob("v*/x86_64-windows"), reverse=True),
             DXMT_SDK_DIR / "lib" / "wine" / "x86_64-windows",
             DXMT_SDK_DIR,
         ]
         x86_src_dirs = [
             DXMT_SDK_DIR / "i386-windows",
+            *sorted(DXMT_SDK_DIR.glob("v*/i386-windows"), reverse=True),
             DXMT_SDK_DIR / "lib" / "wine" / "i386-windows",
         ]
-        for dll in ("d3d10core.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll"):
+        unix_src_dirs = [
+            DXMT_SDK_DIR / "x86_64-unix",
+            *sorted(DXMT_SDK_DIR.glob("v*/x86_64-unix"), reverse=True),
+        ]
+        for dll in ("d3d10core.dll", "d3d11.dll", "dxgi.dll", "winemetal.dll", "nvapi64.dll", "nvngx.dll"):
             for sdir in x64_src_dirs:
                 src = sdir / dll
                 if src.exists():
@@ -192,5 +225,14 @@ def stage_backend_dlls_into_prefix(
                         syswow64_dir.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, dst)
                     break
+
+        wine_unix_dst = WINE_SDK_DIR / "lib" / "wine" / "x86_64-unix"
+        for sdir in unix_src_dirs:
+            wm_so = sdir / "winemetal.so"
+            if wm_so.exists() and wine_unix_dst.exists():
+                actions.append(f"Stage DXMT Unix bridge {wm_so.name} -> {wine_unix_dst / wm_so.name}")
+                if not dry_run:
+                    shutil.copy2(wm_so, wine_unix_dst / wm_so.name)
+                break
 
     return actions
