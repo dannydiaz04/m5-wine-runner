@@ -8,9 +8,11 @@ import plistlib
 from m5runner.app_generator import create_macos_app_bundle
 from m5runner.backends import (
     build_execution_environment,
+    find_wine_binary,
     format_winedlloverrides,
 )
 from m5runner.cli import main
+from m5runner.config import DEFAULT_PREFIX, GPTK_PREFIX, GPTK_WINE_DIR, STAGING_WINE_DIR
 from m5runner.patchers import (
     bypass_eac_elden_ring,
     patch_rdr2_settings_and_launcher,
@@ -58,17 +60,33 @@ def test_build_execution_environment_m5_defaults() -> None:
     witcher = profiles["witcher3"]
 
     env_dx12 = build_execution_environment(witcher, backend_override="d3dmetal", enable_hud=True, base_env={})
-    assert env_dx12["WINEMSYNC"] == "1"
+    assert env_dx12["WINEESYNC"] == "1"
+    assert "WINEMSYNC" not in env_dx12
     assert env_dx12["ROSETTA_ADVERTISE_AVX"] == "1"
     assert env_dx12["D3DM_ENABLE_METALFX"] == "1"
     assert env_dx12["MTL_HUD_ENABLED"] == "1"
-    assert "d3d11,d3d12,d3d12core,dxgi" in env_dx12["WINEDLLOVERRIDES"]
+    # GPTK Wine's builtins are D3DMetal: no native overrides, no DYLD hacks, no imported GPTK 4 framework
+    assert "d3d12" not in env_dx12.get("WINEDLLOVERRIDES", "")
+    assert "DYLD_FALLBACK_LIBRARY_PATH" not in env_dx12
+    assert "D3DMETAL_FRAMEWORK_PATH" not in env_dx12
+    assert env_dx12["WINEPREFIX"].endswith("gptk_prefix")
     assert env_dx12["M5RUNNER_ACTIVE_BACKEND"] == "d3dmetal"
 
     env_dx11 = build_execution_environment(witcher, backend_override="dxmt", enable_hud=False, base_env={})
     assert env_dx11["MTL_HUD_ENABLED"] == "0"
     assert env_dx11["M5RUNNER_ACTIVE_BACKEND"] == "dxmt"
     assert "d3d10core" in env_dx11["WINEDLLOVERRIDES"]
+    assert env_dx11["WINEPREFIX"].endswith("default_prefix")
+
+
+def test_each_backend_family_gets_its_own_runtime_and_prefix() -> None:
+    profiles = load_profiles()
+    assert find_wine_binary("d3dmetal").parent.parent == GPTK_WINE_DIR
+    assert find_wine_binary("d3dmetal_gptk4").parent.parent == GPTK_WINE_DIR
+    assert find_wine_binary("dxmt").parent.parent == STAGING_WINE_DIR
+    assert profiles["elden-ring"].prefix_path == GPTK_PREFIX
+    assert profiles["sekiro"].prefix_path == DEFAULT_PREFIX
+    assert profiles["dmc4"].prefix_path.name == "legacy_wow64"
 
 
 def test_witcher3_dual_executable_resolution(tmp_path: Path) -> None:
@@ -97,12 +115,20 @@ def test_elden_ring_eac_bypass_patcher(tmp_path: Path) -> None:
     main_exe = game_sub / "eldenring.exe"
     eac_exe.write_text("original_eac_binary", encoding="utf-8")
     main_exe.write_text("real_eldenring_binary", encoding="utf-8")
+    # Leftover from the earlier Steam-emulator swap: must be put back to Valve's DLL
+    (game_sub / "steam_api64.dll").write_text("emulator_dll", encoding="utf-8")
+    (game_sub / "steam_api64.dll.valve_bak").write_text("valve_dll", encoding="utf-8")
 
     actions = bypass_eac_elden_ring(er, game_dir=tmp_path, dry_run=False)
     assert any("Backup EAC launcher" in a for a in actions)
     assert (game_sub / "start_protected_game.exe.bak").read_text(encoding="utf-8") == "original_eac_binary"
     assert (game_sub / "start_protected_game.exe").read_text(encoding="utf-8") == "real_eldenring_binary"
     assert (game_sub / "steam_appid.txt").read_text(encoding="utf-8").strip() == "1245620"
+    assert (game_sub / "steam_api64.dll").read_text(encoding="utf-8") == "valve_dll"
+
+    # Idempotent: a second run has nothing left to restore
+    again = bypass_eac_elden_ring(er, game_dir=tmp_path, dry_run=False)
+    assert not any("Restore Valve" in a for a in again)
 
 
 def test_rdr2_system_xml_vulkan_to_dx12_patcher(tmp_path: Path, monkeypatch) -> None:
@@ -166,6 +192,7 @@ def test_cli_dry_run_commands() -> None:
     assert main(["list"]) == 0
     assert main(["doctor"]) == 0
     assert main(["steam", "--dry-run"]) == 0
+    assert main(["steam", "elden-ring", "--dry-run"]) == 0
     assert main(["download", "sekiro", "--user", "testuser", "--dry-run"]) == 0
     assert main(["launch", "witcher3", "--dry-run"]) == 0
     assert main(["launch", "mhwilds", "--dry-run"]) == 0

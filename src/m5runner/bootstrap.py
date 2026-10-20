@@ -2,22 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import urllib.request
 
-from m5runner.backends import find_wine_binary
+from m5runner.backends import ensure_prefix, find_wine_binary
 from m5runner.config import (
     D3DMETAL_SDK_DIR,
     DEFAULT_PREFIX,
     DXMT_SDK_DIR,
-    LEGACY_WOW64_PREFIX,
+    GPTK_PREFIX,
+    GPTK_WINE_DIR,
+    GPTK_WINE_SHA256,
+    GPTK_WINE_VERSION,
+    LOGS_DIR,
     MOLTENVK_RT_SDK_DIR,
-    WINE_SDK_DIR,
+    RUNTIME_ENV,
+    SDK_DIR,
+    STAGING_WINE_DIR,
     ensure_runtime_dirs,
 )
 
@@ -51,12 +61,20 @@ def run_doctor() -> dict[str, dict[str, str | bool]]:
         "detail": "Installed (AVX/AVX2/F16C advertisement supported)" if rosetta_ok else "Not detected",
     }
 
-    # 4. Wine WoW64 Runtime check
-    wine_bin = find_wine_binary()
-    report["wine"] = {
-        "ok": wine_bin.exists(),
-        "detail": str(wine_bin) if wine_bin.exists() else f"Missing (run 'm5runner bootstrap' -> {WINE_SDK_DIR})",
-    }
+    # 4. Wine runtimes: GPTK Wine hosts D3DMetal, Wine Staging hosts DXMT / MoltenVK
+    for key, backend, runtime_dir in (
+        ("wine_gptk", "d3dmetal", GPTK_WINE_DIR),
+        ("wine_staging", "dxmt", STAGING_WINE_DIR),
+    ):
+        wine_bin = find_wine_binary(backend)
+        report[key] = {
+            "ok": wine_bin.exists(),
+            "detail": (
+                f"{_wine_version(wine_bin)} ({wine_bin})"
+                if wine_bin.exists()
+                else f"Missing (run 'm5runner bootstrap' -> {runtime_dir})"
+            ),
+        }
 
     # 5. Winetricks check
     winetricks_bin = shutil.which("winetricks")
@@ -78,26 +96,25 @@ def run_doctor() -> dict[str, dict[str, str | bool]]:
         "detail": str(dxmt_dll) if dxmt_dll else f"Missing (run 'm5runner bootstrap' -> {DXMT_SDK_DIR})",
     }
 
-    # 7. Apple D3DMetal (GPTK 3/4) check
-    d3dmetal_bin = _find_first(
-        [
-            D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework" / "Versions" / "A" / "D3DMetal",
-            D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework" / "D3DMetal",
-            D3DMETAL_SDK_DIR / "D3DMetal.framework" / "Versions" / "A" / "D3DMetal",
-            D3DMETAL_SDK_DIR / "D3DMetal.framework" / "D3DMetal",
-            D3DMETAL_SDK_DIR / "wine" / "x86_64-windows" / "d3d12.dll",
-            D3DMETAL_SDK_DIR / "windows" / "system32" / "d3d12.dll",
-            D3DMETAL_SDK_DIR / "d3d12.dll",
-        ]
-    )
+    # 7. Apple D3DMetal: the copy bundled with GPTK Wine is the one games actually use
+    runtime_d3dm = _d3dmetal_version(GPTK_WINE_DIR / "lib" / "external")
     report["d3dmetal"] = {
-        "ok": d3dmetal_bin is not None,
+        "ok": runtime_d3dm is not None,
         "detail": (
-            str(d3dmetal_bin)
-            if d3dmetal_bin
-            else f"Missing (run 'm5runner import-gptk <GPTK.dmg>' -> {D3DMETAL_SDK_DIR})"
+            f"D3DMetal {runtime_d3dm} bundled with GPTK Wine"
+            if runtime_d3dm
+            else f"Missing (run 'm5runner bootstrap' -> {GPTK_WINE_DIR})"
         ),
     }
+    imported_d3dm = _d3dmetal_version(D3DMETAL_SDK_DIR / "external")
+    if imported_d3dm:
+        report["gptk_import"] = {
+            "ok": True,
+            "detail": (
+                f"D3DMetal {imported_d3dm} imported to {D3DMETAL_SDK_DIR} (reference only: 4.x needs "
+                "a newer Wine than GPTK Wine 7.7, e.g. CrossOver's lib64/apple_gptk)"
+            ),
+        }
 
     # 8. Custom MoltenVK Ray Tracing check
     mvk_rt = MOLTENVK_RT_SDK_DIR / "libMoltenVK.dylib"
@@ -130,11 +147,11 @@ def bootstrap_environment(
     gptk_source: Path | None = None,
     dry_run: bool = False,
 ) -> list[str]:
-    """Install and configure DXMT, Wine 11.x WoW64, winetricks, prefixes, and optional GPTK/XIV."""
+    """Install both Wine runtimes, DXMT, winetricks, prefixes, and optional GPTK/XIV."""
     steps: list[str] = []
     if not dry_run:
         ensure_runtime_dirs()
-    steps.append(f"Initialized runtime directory layout under {WINE_SDK_DIR.parent.parent}")
+    steps.append(f"Initialized runtime directory layout under {SDK_DIR.parent}")
 
     # 1. Install winetricks via Homebrew if missing
     if not shutil.which("winetricks"):
@@ -149,13 +166,19 @@ def bootstrap_environment(
     if not dry_run:
         _install_latest_dxmt()
 
-    # 3. Download & extract Gcenx Wine Staging 11.x (WoW64 + msync) into ~/Games/sdk/wine
-    if not find_wine_binary().exists():
-        steps.append(f"Download & extract Gcenx Wine 11.x (WoW64 + msync) into {WINE_SDK_DIR}")
+    # 3. Download & extract both Wine runtimes (one per backend family)
+    if not find_wine_binary("d3dmetal").exists():
+        steps.append(f"Download Gcenx game-porting-toolkit {GPTK_WINE_VERSION} (D3DMetal host) into {GPTK_WINE_DIR}")
         if not dry_run:
-            _install_latest_gcenx_wine()
+            _install_gptk_wine()
     else:
-        steps.append(f"Verified Wine binary at {find_wine_binary()}")
+        steps.append(f"Verified GPTK Wine at {find_wine_binary('d3dmetal')}")
+    if not find_wine_binary("dxmt").exists():
+        steps.append(f"Download Gcenx Wine Staging 11.x (DXMT host) into {STAGING_WINE_DIR}")
+        if not dry_run:
+            _install_wine_staging()
+    else:
+        steps.append(f"Verified Wine Staging at {find_wine_binary('dxmt')}")
 
     # 4. Optional XIV on Mac installation
     if install_xiv:
@@ -167,50 +190,54 @@ def bootstrap_environment(
     if gptk_source:
         steps.extend(import_gptk_d3dmetal(gptk_source, dry_run=dry_run))
 
-    # 6. Prepare default_prefix and legacy_wow64 directories
-    steps.append(f"Prepared 64-bit prefix at {DEFAULT_PREFIX} and WoW64 prefix at {LEGACY_WOW64_PREFIX}")
+    # 6. Initialize one prefix per runtime (Windows 10, created by the runtime that will run it)
+    for backend, prefix in (("d3dmetal", GPTK_PREFIX), ("dxmt", DEFAULT_PREFIX)):
+        steps.extend(ensure_prefix(prefix, backend, dry_run=dry_run))
     return steps
 
 
 def setup_or_launch_windows_steam(
-    prefix_path: Path = DEFAULT_PREFIX,
+    prefix_path: Path = GPTK_PREFIX,
+    backend: str = "d3dmetal",
     dry_run: bool = False,
 ) -> list[str]:
-    """Download/install Windows SteamSetup.exe into the prefix or launch steam.exe."""
-    actions: list[str] = []
-    steam_exe = prefix_path / "drive_c" / "Program Files (x86)" / "Steam" / "steam.exe"
-    installer_path = prefix_path / "drive_c" / "windows" / "temp" / "SteamSetup.exe"
-    wine_bin = find_wine_binary()
+    """Install Windows Steam into the prefix if needed, then start it in the background.
 
+    Games launched outside Steam (EAC bypass + steam_appid.txt) still call SteamAPI_Init(),
+    which needs this client running and signed in inside the same prefix.
+    """
+    actions: list[str] = ensure_prefix(prefix_path, backend, dry_run=dry_run)
+    steam_dir = prefix_path / "drive_c" / "Program Files (x86)" / "Steam"
+    steam_exe = steam_dir / "Steam.exe"
+    installer_path = prefix_path / "drive_c" / "users" / "Public" / "SteamSetup.exe"
+    wine_bin = find_wine_binary(backend)
     env = {
-        **dict(__import__("os").environ),
+        **os.environ,
+        **RUNTIME_ENV["gptk" if backend.startswith("d3dmetal") else "staging"],
         "WINEPREFIX": str(prefix_path),
-        "WINEMSYNC": "1",
-        "ROSETTA_ADVERTISE_AVX": "1",
+        "WINEDEBUG": "-all",
     }
 
     if not steam_exe.exists():
         actions.append(f"Download Windows SteamSetup.exe -> {installer_path}")
-        actions.append(f"Run `{wine_bin} {installer_path}` inside {prefix_path}")
+        actions.append(f"Silently install Steam into {steam_dir}")
         if not dry_run:
             installer_path.parent.mkdir(parents=True, exist_ok=True)
             req = urllib.request.Request(
-                "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
+                "https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe",
                 headers={"User-Agent": "m5-wine-runner/0.1.0"},
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 installer_path.write_bytes(resp.read())
-            subprocess.run([str(wine_bin), str(installer_path)], env=env, check=True)
-    else:
-        cmd = [
-            str(wine_bin),
-            str(steam_exe),
-            "-cef-disable-gpu-compositing",
-            "-no-cef-sandbox",
-        ]
-        actions.append(f"Launch Windows Steam inside prefix: {' '.join(cmd)}")
-        if not dry_run:
-            subprocess.run(cmd, env=env, check=False)
+            subprocess.run([str(wine_bin), str(installer_path), "/S"], env=env, check=True)
+
+    log_path = LOGS_DIR / "steam.log"
+    cmd = [str(wine_bin), str(steam_exe), "-cef-disable-gpu-compositing", "-no-cef-sandbox"]
+    actions.append(f"Start Windows Steam in the background (log: {log_path}); sign in once, then leave it running")
+    if not dry_run:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as log:
+            subprocess.Popen(cmd, env=env, cwd=steam_dir, stdout=log, stderr=log, start_new_session=True)
 
     return actions
 
@@ -290,45 +317,47 @@ def _install_latest_dxmt() -> Path:
     return DXMT_SDK_DIR
 
 
-def _install_latest_gcenx_wine() -> Path:
-    """Download the latest wine-staging-*-osx64.tar.xz from Gcenx/macOS_Wine_builds."""
+def _install_gptk_wine() -> Path:
+    """Install Gcenx's game-porting-toolkit build (Apple's GPTK Wine 7.7 + bundled D3DMetal 3).
+
+    Pinned and checksummed: D3DMetal's bridge DLLs must match this Wine's unix-call ABI, so the
+    runtime is never upgraded implicitly and nothing is ever overlaid onto it.
+    """
+    url = (
+        "https://github.com/Gcenx/game-porting-toolkit/releases/download/"
+        f"Game-Porting-Toolkit-{GPTK_WINE_VERSION}/game-porting-toolkit-{GPTK_WINE_VERSION}.tar.xz"
+    )
+    return _install_wine_app_archive(url, "Game Porting Toolkit.app", GPTK_WINE_DIR, GPTK_WINE_SHA256)
+
+
+def _install_wine_staging() -> Path:
+    """Install the latest Gcenx Wine Staging build (hosts DXMT and MoltenVK)."""
     api_url = "https://api.github.com/repos/Gcenx/macOS_Wine_builds/releases/latest"
     req = urllib.request.Request(api_url, headers={"User-Agent": "m5-wine-runner/0.1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         release = json.loads(resp.read().decode("utf-8"))
 
-    asset_url = None
-    asset_name = "wine-staging-osx64.tar.xz"
     for asset in release.get("assets", []):
         if "staging" in asset["name"] and asset["name"].endswith(".tar.xz"):
-            asset_url = asset["browser_download_url"]
-            asset_name = asset["name"]
-            break
+            return _install_wine_app_archive(asset["browser_download_url"], "Wine Staging.app", STAGING_WINE_DIR)
+    raise RuntimeError("Could not find wine-staging tar.xz in Gcenx/macOS_Wine_builds")
 
-    if not asset_url:
-        raise RuntimeError("Could not find wine-staging tar.xz in Gcenx/macOS_Wine_builds")
 
-    WINE_SDK_DIR.mkdir(parents=True, exist_ok=True)
-    archive_path = WINE_SDK_DIR.parent / asset_name
-    dl_req = urllib.request.Request(asset_url, headers={"User-Agent": "m5-wine-runner/0.1.0"})
-    with urllib.request.urlopen(dl_req, timeout=180) as resp:
-        archive_path.write_bytes(resp.read())
-
-    subprocess.run(["tar", "-xf", str(archive_path), "-C", str(WINE_SDK_DIR.parent)], check=True)
-    extracted_app = WINE_SDK_DIR.parent / "Wine Staging.app"
-    if extracted_app.exists():
-        subprocess.run(
-            ["/usr/bin/xattr", "-drs", "com.apple.quarantine", str(extracted_app)],
-            check=False,
-        )
-        wine_res = extracted_app / "Contents" / "Resources" / "wine"
-        if wine_res.exists():
-            if WINE_SDK_DIR.exists():
-                shutil.rmtree(WINE_SDK_DIR)
-            shutil.move(str(wine_res), str(WINE_SDK_DIR))
-            shutil.rmtree(extracted_app, ignore_errors=True)
-    archive_path.unlink(missing_ok=True)
-    return WINE_SDK_DIR
+def _install_wine_app_archive(url: str, app_name: str, dest: Path, sha256: str | None = None) -> Path:
+    """Download a Gcenx Wine .app tarball and move its Contents/Resources/wine to dest."""
+    if dest.exists():
+        raise FileExistsError(f"{dest} already exists; refusing to overwrite a Wine runtime")
+    with tempfile.TemporaryDirectory(dir=SDK_DIR) as tmp:
+        archive_path = Path(tmp) / "wine.tar.xz"
+        req = urllib.request.Request(url, headers={"User-Agent": "m5-wine-runner/0.1.0"})
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            archive_path.write_bytes(resp.read())
+        if sha256 and hashlib.sha256(archive_path.read_bytes()).hexdigest() != sha256:
+            raise RuntimeError(f"Checksum mismatch for {url}")
+        subprocess.run(["tar", "-xf", str(archive_path), "-C", tmp], check=True)
+        shutil.move(str(Path(tmp) / app_name / "Contents" / "Resources" / "wine"), str(dest))
+    subprocess.run(["/usr/bin/xattr", "-drs", "com.apple.quarantine", str(dest)], check=False)
+    return dest
 
 
 def _attach_dmg(dmg_path: Path) -> Path:
@@ -400,13 +429,12 @@ def import_gptk_d3dmetal(source_path: Path, dry_run: bool = False) -> list[str]:
                     shutil.rmtree(top_fw) if top_fw.is_dir() and not top_fw.is_symlink() else top_fw.unlink()
                 top_fw.symlink_to(ext_fw)
 
-            # Copy external/{D3DMetal.framework, libd3dshared.dylib} into Wine SDK's lib/external
-            if (WINE_SDK_DIR / "lib").exists() and (D3DMETAL_SDK_DIR / "external").exists():
-                wine_ext = WINE_SDK_DIR / "lib" / "external"
-                if wine_ext.exists():
-                    shutil.rmtree(wine_ext)
-                shutil.copytree(D3DMETAL_SDK_DIR / "external", wine_ext, symlinks=True)
-                actions.append(f"Linked GPTK 4 external libraries into Wine runtime: {wine_ext}")
+            # Deliberately not copied into a Wine runtime: GPTK 4.x bridge DLLs look up
+            # __wine_unix_call_dispatcher, which GPTK Wine 7.7 does not export, so they fail
+            # DllMain there. The bundled D3DMetal 3 in GPTK Wine is what the runner uses.
+            actions.append(
+                "Kept imported D3DMetal out of the runtimes; GPTK Wine keeps its matching bundled D3DMetal"
+            )
         else:
             # Fallback recursive search for custom extracted directories
             for candidate in search_root.rglob("D3DMetal.framework"):
@@ -444,6 +472,23 @@ def import_gptk_d3dmetal(source_path: Path, dry_run: bool = False) -> list[str]:
                 subprocess.run(["hdiutil", "detach", str(vol)], check=False, capture_output=True)
 
     return actions
+
+
+def _wine_version(wine_bin: Path) -> str:
+    try:
+        return subprocess.check_output([str(wine_bin), "--version"], text=True, timeout=30).strip()
+    except Exception:
+        return "unknown version"
+
+
+def _d3dmetal_version(external_dir: Path) -> str | None:
+    """D3DMetal.framework version inside a GPTK lib/external directory, if present."""
+    plist = external_dir / "D3DMetal.framework" / "Versions" / "A" / "Resources" / "version.plist"
+    try:
+        with plist.open("rb") as f:
+            return str(plistlib.load(f).get("CFBundleShortVersionString", "unknown"))
+    except OSError:
+        return None
 
 
 def _sysctl_str(key: str) -> str:

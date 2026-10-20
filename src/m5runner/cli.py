@@ -11,6 +11,7 @@ import sys
 from m5runner.app_generator import create_macos_app_bundle
 from m5runner.backends import (
     build_execution_environment,
+    ensure_prefix,
     find_wine_binary,
     stage_backend_dlls_into_prefix,
 )
@@ -21,7 +22,7 @@ from m5runner.bootstrap import (
     run_doctor,
     setup_or_launch_windows_steam,
 )
-from m5runner.config import APPLICATIONS_DIR, DEFAULT_PREFIX, SCRIPTS_DIR
+from m5runner.config import APPLICATIONS_DIR, BACKEND_RUNTIME, PREFIXES_DIR, RUNTIME_PREFIXES, SCRIPTS_DIR
 from m5runner.patchers import run_profile_hooks
 from m5runner.profiles import VALID_BACKENDS, load_profiles
 
@@ -99,8 +100,18 @@ def _cmd_launch(args: argparse.Namespace) -> int:
     enable_hud = not args.no_hud
     game_dir = Path(args.game_dir).expanduser() if args.game_dir else None
 
-    # 1. Run pre-launch hooks
-    hook_actions = run_profile_hooks(profile, game_dir=game_dir, dry_run=args.dry_run)
+    if active_backend == "d3dmetal_gptk4":
+        print(
+            "Note: D3DMetal 4 needs a newer Wine than GPTK Wine 7.7 (e.g. CrossOver); "
+            "running on GPTK Wine's bundled D3DMetal 3.",
+            file=sys.stderr,
+        )
+
+    # 1. Create the prefix with its own runtime if needed, then run pre-launch hooks
+    hook_actions: list[str] = []
+    if active_backend != "xivmac":
+        hook_actions += ensure_prefix(profile.prefix_path_for(active_backend), active_backend, dry_run=args.dry_run)
+    hook_actions += run_profile_hooks(profile, game_dir=game_dir, dry_run=args.dry_run)
     dll_actions = stage_backend_dlls_into_prefix(
         profile,
         backend_override=active_backend,
@@ -119,7 +130,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
     if active_backend == "xivmac":
         cmd = ["open", "-a", "XIV on Mac"]
     else:
-        wine_bin = find_wine_binary()
+        wine_bin = find_wine_binary(active_backend)
         target_exe = profile.resolve_executable(
             backend_override=active_backend,
             explicit_dir=game_dir,
@@ -133,7 +144,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
 
     exported_keys = (
         "WINEPREFIX",
-        "WINEMSYNC",
+        "WINEESYNC",
         "ROSETTA_ADVERTISE_AVX",
         "D3DM_ENABLE_METALFX",
         "MTL_HUD_ENABLED",
@@ -157,7 +168,7 @@ def _cmd_launch(args: argparse.Namespace) -> int:
         return subprocess.call(cmd, env=env, cwd=launch_cwd)
     finally:
         if "cleanup_jedi_survivor_ea_and_mem" in profile.hooks:
-            wineserver = find_wine_binary().parent / "wineserver"
+            wineserver = find_wine_binary(active_backend).parent / "wineserver"
             if wineserver.exists():
                 subprocess.run([str(wineserver), "-k"], env=env, check=False)
 
@@ -180,7 +191,17 @@ def _cmd_create_apps(args: argparse.Namespace) -> int:
 
 
 def _cmd_steam(args: argparse.Namespace) -> int:
-    actions = setup_or_launch_windows_steam(prefix_path=DEFAULT_PREFIX, dry_run=args.dry_run)
+    # Steam must run in the same prefix (and runtime) as the game it serves
+    backend = args.backend
+    prefix_path = PREFIXES_DIR / RUNTIME_PREFIXES[BACKEND_RUNTIME[backend]]
+    if args.game:
+        profiles = load_profiles()
+        if args.game not in profiles:
+            print(f"Unknown game slug '{args.game}'. Run 'm5runner list' to view valid slugs.", file=sys.stderr)
+            return 1
+        backend = profiles[args.game].backend
+        prefix_path = profiles[args.game].prefix_path_for(backend)
+    actions = setup_or_launch_windows_steam(prefix_path=prefix_path, backend=backend, dry_run=args.dry_run)
     prefix = "[DRY-RUN] " if args.dry_run else ""
     for act in actions:
         print(f"{prefix}- {act}")
@@ -227,7 +248,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="m5runner",
-        description="Unified Wine / D3DMetal 4 / DXMT / MoltenVK-RT Runner for Apple M5 Max (128GB)",
+        description="Unified Wine / D3DMetal / DXMT / MoltenVK-RT Runner for Apple M5 Max (128GB)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -240,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.set_defaults(func=_cmd_doctor)
 
     # bootstrap
-    p_boot = sub.add_parser("bootstrap", help="Install Wine 11.x WoW64, winetricks, DXMT, and prefixes")
+    p_boot = sub.add_parser("bootstrap", help="Install GPTK Wine (D3DMetal) and Wine Staging (DXMT), winetricks, DXMT, and prefixes")
     p_boot.add_argument("--with-xiv", action="store_true", help="Also install XIV on Mac via Homebrew")
     p_boot.add_argument("--gptk-dmg", help="Optional path to Apple GPTK Evaluation Environment DMG")
     p_boot.add_argument("--dry-run", action="store_true", help="Print actions without modifying disk")
@@ -289,7 +310,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_apps.set_defaults(func=_cmd_create_apps)
 
     # steam
-    p_steam = sub.add_parser("steam", help="Install or launch Windows Steam inside default_prefix")
+    p_steam = sub.add_parser("steam", help="Install or start Windows Steam inside a game's prefix")
+    p_steam.add_argument("game", nargs="?", help="Game slug whose prefix Steam should run in (e.g. elden-ring)")
+    p_steam.add_argument(
+        "--backend",
+        choices=sorted(BACKEND_RUNTIME),
+        default="d3dmetal",
+        help="Without a game slug: use this backend's runtime prefix (default: d3dmetal -> gptk_prefix)",
+    )
     p_steam.add_argument("--dry-run", action="store_true", help="Preview Windows Steam setup/launch")
     p_steam.set_defaults(func=_cmd_steam)
 
