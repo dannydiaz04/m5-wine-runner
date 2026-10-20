@@ -161,6 +161,20 @@ def bypass_eac_elden_ring(
         if not dry_run:
             shutil.copy2(main_exe, eac_exe)
 
+    # Stage standalone gbe_fork steam_api64.dll so Elden Ring boots without requiring Windows steam.exe
+    steam_api = game_sub / "steam_api64.dll"
+    steam_api_bak = game_sub / "steam_api64.dll.valve_bak"
+    gbe_dll = MODS_CACHE_DIR / "gbe_fork" / "release" / "regular" / "x64" / "steam_api64.dll"
+    if steam_api.exists():
+        if not steam_api_bak.exists():
+            actions.append(f"Backup original Valve {steam_api.name} -> {steam_api_bak.name}")
+            if not dry_run:
+                shutil.copy2(steam_api, steam_api_bak)
+        if gbe_dll.exists():
+            actions.append(f"Stage standalone gbe_fork {steam_api.name} for offline launch without steam.exe")
+            if not dry_run:
+                shutil.copy2(gbe_dll, steam_api)
+
     if coop_exe.exists():
         actions.append(f"Detected Seamless Co-op launcher ({coop_exe}); prioritizing multiplayer bypass.")
 
