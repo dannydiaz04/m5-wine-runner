@@ -137,7 +137,7 @@ Determine the following 5 attributes before writing any config:
    - **Rockstar / EA Background Services**: Add pre-launch `pkill -f` cleanup for zombie helper processes (`SocialClubHelper.exe`, `EABackgroundService.exe`).
 
 ### Phase 2: Add the Game Profile to `profiles/games.toml`
-Add a new `[games.<slug>]` block in [profiles/games.toml](file:///Users/danieldiaz/projects/m5-wine-runner/profiles/games.toml):
+Add a new `[games.<slug>]` block in [profiles/games.toml](profiles/games.toml):
 ```toml
 [games.example-game]
 name = "Example Game"
@@ -163,7 +163,7 @@ notes = "Explanation of backend choice and required bypasses."
 
 ### Phase 3: Implement Any Custom Hook in `src/m5runner/patchers.py`
 If the game needs file patching (XML/INI/JSON config edits, DLL injection, EAC binary swap, or registry tweaks):
-1. Write a pure/idempotent function in [src/m5runner/patchers.py](file:///Users/danieldiaz/projects/m5-wine-runner/src/m5runner/patchers.py) with signature:
+1. Write a pure/idempotent function in [src/m5runner/patchers.py](src/m5runner/patchers.py) with signature:
    ```python
    def my_custom_hook(
        profile: GameProfile,
@@ -179,6 +179,6 @@ If the game needs file patching (XML/INI/JSON config edits, DLL injection, EAC b
 uv run pytest -v
 m5runner launch <new-game-slug> --dry-run
 ```
-Ensure all unit tests pass and update `EXPECTED_14_SLUGS` (or profile tests) in [tests/test_runner.py](file:///Users/danieldiaz/projects/m5-wine-runner/tests/test_runner.py).
+Ensure all unit tests pass and update `EXPECTED_14_SLUGS` (or profile tests) in [tests/test_runner.py](tests/test_runner.py).
 
-For deep technical details on how `D3DMetal`, `DXMT`, and `MoltenVK-RT` work under the hood, read [docs/PORTING_GUIDE.md](file:///Users/danieldiaz/projects/m5-wine-runner/docs/PORTING_GUIDE.md).
+For deep technical details on how `D3DMetal`, `DXMT`, and `MoltenVK-RT` work under the hood, read [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md).
