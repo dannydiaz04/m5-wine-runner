@@ -11,7 +11,6 @@ import urllib.request
 import zipfile
 
 from m5runner.config import (
-    D3DMETAL_SDK_DIR,
     MODS_CACHE_DIR,
     MOLTENVK_RT_SDK_DIR,
 )
@@ -161,19 +160,16 @@ def bypass_eac_elden_ring(
         if not dry_run:
             shutil.copy2(main_exe, eac_exe)
 
-    # Stage standalone gbe_fork steam_api64.dll so Elden Ring boots without requiring Windows steam.exe
+    # Undo the earlier Steam-emulator swap: the game must talk to the real Windows Steam client
+    # running in the same prefix (saves are keyed to the real SteamID).
     steam_api = game_sub / "steam_api64.dll"
     steam_api_bak = game_sub / "steam_api64.dll.valve_bak"
-    gbe_dll = MODS_CACHE_DIR / "gbe_fork" / "release" / "regular" / "x64" / "steam_api64.dll"
-    if steam_api.exists():
-        if not steam_api_bak.exists():
-            actions.append(f"Backup original Valve {steam_api.name} -> {steam_api_bak.name}")
-            if not dry_run:
-                shutil.copy2(steam_api, steam_api_bak)
-        if gbe_dll.exists():
-            actions.append(f"Stage standalone gbe_fork {steam_api.name} for offline launch without steam.exe")
-            if not dry_run:
-                shutil.copy2(gbe_dll, steam_api)
+    if steam_api_bak.exists() and (
+        not steam_api.exists() or steam_api.read_bytes() != steam_api_bak.read_bytes()
+    ):
+        actions.append(f"Restore Valve {steam_api.name} from {steam_api_bak.name}")
+        if not dry_run:
+            shutil.copy2(steam_api_bak, steam_api)
 
     if coop_exe.exists():
         actions.append(f"Detected Seamless Co-op launcher ({coop_exe}); prioritizing multiplayer bypass.")
@@ -371,22 +367,11 @@ def enforce_horizon_stereo_and_gptk4(
     game_dir: Path | None = None,
     dry_run: bool = False,
 ) -> list[str]:
-    """Enforce GPTK 4 D3DMetal and stereo audio output for Horizon Forbidden West."""
-    actions: list[str] = []
-    d3dm_plist = (
-        D3DMETAL_SDK_DIR
-        / "D3DMetal.framework"
-        / "Versions"
-        / "A"
-        / "Resources"
-        / "Info.plist"
-    )
-    if d3dm_plist.exists():
-        actions.append(f"Verified D3DMetal framework bundle at {d3dm_plist}")
-    else:
-        actions.append(
-            "Reminder: Run 'm5runner import-gptk <GPTK4.dmg>' to populate ~/Games/sdk/d3dmetal with GPTK 4.0+ DLLs"
-        )
+    """Stereo audio output for Horizon Forbidden West (GPTK 4 D3DMetal is preferred but unavailable)."""
+    actions: list[str] = [
+        "Note: runs on GPTK Wine's bundled D3DMetal 3; D3DMetal 4 (Decima fixes) needs a newer "
+        "Wine than GPTK Wine 7.7, e.g. CrossOver with GPTK 4 in lib64/apple_gptk"
+    ]
 
     reg_msg = _write_reg_file_to_prefix(
         profile.prefix_path,

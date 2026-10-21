@@ -12,7 +12,6 @@ tier = "Tier 1: Zero Lift"
 engine = "Custom (DX11)"
 backend = "xivmac"
 alt_backends = ["dxmt"]
-prefix = "default_prefix"
 steam_app_id = 39210
 exe_rel_paths = [
     "game/ffxiv_dx11.exe",
@@ -33,7 +32,6 @@ tier = "Tier 1: Low Lift"
 engine = "FromSoftware (DX11)"
 backend = "dxmt"
 alt_backends = ["d3dmetal"]
-prefix = "default_prefix"
 steam_app_id = 814380
 exe_rel_paths = [
     "sekiro.exe",
@@ -53,7 +51,6 @@ tier = "Tier 1: Low Lift"
 engine = "RE Engine (DX12)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 1335500
 exe_rel_paths = [
     "Pragmata.exe",
@@ -74,7 +71,6 @@ tier = "Tier 1: Low Lift"
 engine = "REDengine 4 (DX11/DX12)"
 backend = "d3dmetal"
 alt_backends = ["dxmt"]
-prefix = "default_prefix"
 steam_app_id = 292030
 exe_rel_paths = [
     "bin/x64_dx12/witcher3.exe",
@@ -97,7 +93,6 @@ tier = "Tier 2: Low-Medium Lift"
 engine = "FromSoftware (DX12)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 1245620
 exe_rel_paths = [
     "Game/eldenring.exe",
@@ -108,10 +103,10 @@ launch_args = []
 winetricks = []
 dlss_metalfx = false
 require_avx = true
-dll_overrides = { d3d12 = "n,b", dxgi = "n,b" }
+dll_overrides = {}
 env = {}
 hooks = ["bypass_eac_elden_ring"]
-notes = "Automates Easy Anti-Cheat (start_protected_game.exe) backup/replacement and steam_appid.txt (1245620) creation, with automatic Seamless Co-op (ersc_launcher.exe) detection."
+notes = "Runs on GPTK Wine's bundled D3DMetal. Automates the Easy Anti-Cheat (start_protected_game.exe) backup/replacement and steam_appid.txt (1245620) for offline play; Windows Steam must be running and signed in inside the prefix ('m5runner steam'). Detects Seamless Co-op (ersc_launcher.exe)."
 
 [games.stellar-blade]
 name = "Stellar Blade"
@@ -119,7 +114,6 @@ tier = "Tier 2: Low-Medium Lift"
 engine = "Unreal Engine 4 (DX12)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 3489700
 exe_rel_paths = [
     "SB/Binaries/Win64/SB-Win64-Shipping.exe",
@@ -140,7 +134,6 @@ tier = "Tier 2: Medium Lift"
 engine = "Jetpack / Santa Monica (DX12)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 2322010
 exe_rel_paths = [
     "GoWR.exe",
@@ -160,7 +153,6 @@ tier = "Tier 2: Medium Lift"
 engine = "Decima (DX12)"
 backend = "d3dmetal_gptk4"
 alt_backends = ["d3dmetal"]
-prefix = "default_prefix"
 steam_app_id = 2420110
 exe_rel_paths = [
     "HorizonForbiddenWest.exe",
@@ -180,7 +172,6 @@ tier = "Tier 2: Medium Lift"
 engine = "Unreal Engine 5 (DX12)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 2417610
 exe_rel_paths = [
     "MGSDelta/Binaries/Win64/MGSDelta-Win64-Shipping.exe",
@@ -201,7 +192,6 @@ tier = "Tier 2: Medium Lift"
 engine = "RAGE (DX12 / Vulkan)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 1174180
 exe_rel_paths = [
     "RDR2.exe",
@@ -222,7 +212,6 @@ tier = "Tier 2: Medium Lift"
 engine = "Unreal Engine 4 (DX12)"
 backend = "d3dmetal"
 alt_backends = ["d3dmetal_gptk4"]
-prefix = "default_prefix"
 steam_app_id = 1774580
 exe_rel_paths = [
     "SwGame/Binaries/Win64/JediSurvivor.exe",
@@ -264,7 +253,6 @@ tier = "Tier 3: High Lift"
 engine = "RE Engine (DX12)"
 backend = "d3dmetal_gptk4"
 alt_backends = ["d3dmetal"]
-prefix = "default_prefix"
 steam_app_id = 2246340
 exe_rel_paths = [
     "MonsterHunterWilds.exe",
@@ -284,7 +272,6 @@ tier = "Tier 3: Very High Lift"
 engine = "id Tech 8 (Vulkan + Mandatory HW Ray Tracing)"
 backend = "moltenvk_rt"
 alt_backends = []
-prefix = "default_prefix"
 steam_app_id = 3017860
 exe_rel_paths = [
     "DOOMTheDarkAges.exe",

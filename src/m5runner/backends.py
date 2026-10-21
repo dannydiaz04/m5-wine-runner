@@ -5,15 +5,19 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import subprocess
 
 from m5runner.config import (
-    D3DMETAL_SDK_DIR,
+    BACKEND_RUNTIME,
     DEFAULT_M5_ENV,
     DXMT_SDK_DIR,
     MOLTENVK_RT_SDK_DIR,
-    WINE_SDK_DIR,
+    RUNTIME_DIRS,
+    RUNTIME_ENV,
 )
 from m5runner.profiles import GameProfile
+
+D3DMETAL_BUILTIN_DLLS = ("d3d10", "d3d10core", "d3d11", "d3d12", "d3d12core", "dxgi")
 
 
 def format_winedlloverrides(overrides: dict[str, str]) -> str:
@@ -32,22 +36,48 @@ def format_winedlloverrides(overrides: dict[str, str]) -> str:
     return ";".join(segments)
 
 
-def find_wine_binary() -> Path:
-    """Locate the active Wine64 / Wine WoW64 executable."""
-    candidates = [
-        WINE_SDK_DIR / "bin" / "wine64",
-        WINE_SDK_DIR / "bin" / "wine",
-        Path("/Applications/Wine Staging.app/Contents/Resources/wine/bin/wine64"),
-        Path("/Applications/Wine Staging.app/Contents/Resources/wine/bin/wine"),
-        Path("/Applications/Wine Devel.app/Contents/Resources/wine/bin/wine64"),
-        Path("/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64"),
-        Path("/opt/homebrew/bin/wine64"),
-        Path("/opt/homebrew/bin/wine"),
-    ]
+def runtime_for(backend: str) -> str:
+    """Name of the Wine runtime ("gptk" or "staging") that hosts a graphics backend."""
+    return BACKEND_RUNTIME[backend]
+
+
+def find_wine_binary(backend: str = "d3dmetal") -> Path:
+    """Locate the Wine executable of the runtime that hosts the given backend."""
+    runtime = runtime_for(backend)
+    runtime_dir = RUNTIME_DIRS[runtime]
+    candidates = [runtime_dir / "bin" / "wine64", runtime_dir / "bin" / "wine"]
+    if runtime == "gptk":
+        candidates.append(Path("/Applications/Game Porting Toolkit.app/Contents/Resources/wine/bin/wine64"))
+    else:
+        candidates.append(Path("/Applications/Wine Staging.app/Contents/Resources/wine/bin/wine"))
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return WINE_SDK_DIR / "bin" / "wine64"
+    return candidates[0]
+
+
+def ensure_prefix(prefix_path: Path, backend: str, dry_run: bool = False) -> list[str]:
+    """Create a prefix with the runtime that will run it, reporting Windows 10.
+
+    Never point two runtimes at one prefix: Wine "updates" a prefix to whichever version touches
+    it last, and moving a prefix to an older Wine is unsupported.
+    """
+    if (prefix_path / "system.reg").exists():
+        return []
+    wine_bin = find_wine_binary(backend)
+    actions = [f"Create Windows 10 prefix {prefix_path} with {wine_bin}"]
+    if dry_run:
+        return actions
+    env = {
+        **os.environ,
+        **RUNTIME_ENV[runtime_for(backend)],
+        "WINEPREFIX": str(prefix_path),
+        "WINEDEBUG": "-all",
+    }
+    subprocess.run([str(wine_bin), "wineboot", "-i"], env=env, check=True)
+    subprocess.run([str(wine_bin), "winecfg", "-v", "win10"], env=env, check=True)
+    subprocess.run([str(wine_bin.parent / "wineserver"), "-w"], env=env, check=False)
+    return actions
 
 
 def build_execution_environment(
@@ -62,7 +92,8 @@ def build_execution_environment(
 
     # 1. Apply M5 Max base environment variables
     env.update(DEFAULT_M5_ENV)
-    env["WINEPREFIX"] = str(profile.prefix_path)
+    env.update(RUNTIME_ENV[runtime_for(active_backend)])
+    env["WINEPREFIX"] = str(profile.prefix_path_for(active_backend))
     env["MTL_HUD_ENABLED"] = "1" if enable_hud else "0"
 
     if profile.require_avx:
@@ -72,32 +103,19 @@ def build_execution_environment(
         env["D3DM_ENABLE_METALFX"] = "1"
 
     # 2. Merge backend-specific DLL overrides and dynamic library paths
-    dll_overrides: dict[str, str] = {
-        "d3d11": "n,b",
-        "d3d12": "n,b",
-        "d3d12core": "n,b",
-        "dxgi": "n,b",
-    }
-    dll_overrides.update(profile.dll_overrides)
+    dll_overrides: dict[str, str] = dict(profile.dll_overrides)
 
-    wine_lib_dir = find_wine_binary().parent.parent / "lib"
+    wine_lib_dir = find_wine_binary(active_backend).parent.parent / "lib"
 
     if active_backend in ("d3dmetal", "d3dmetal_gptk4"):
-        d3dm_fw_lib = D3DMETAL_SDK_DIR / "external" / "D3DMetal.framework" / "Versions" / "A" / "Libraries"
-        dyld_paths = [
-            str(d3dm_fw_lib),
-            str(D3DMETAL_SDK_DIR / "external"),
-            str(D3DMETAL_SDK_DIR / "D3DMetal.framework" / "Versions" / "A" / "Libraries"),
-            str(D3DMETAL_SDK_DIR),
-            str(wine_lib_dir / "external"),
-            str(wine_lib_dir),
-            "/usr/lib",
-        ]
-        env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(dyld_paths)
+        # GPTK Wine's builtin d3d10/d3d11/d3d12/dxgi already are D3DMetal (resolved through
+        # lib/external via the bridge's @loader_path rpath), so no DYLD paths, and a native
+        # override could only shadow them with a stray DLL from system32.
+        for dll in D3DMETAL_BUILTIN_DLLS:
+            dll_overrides.pop(dll, None)
         env["M5RUNNER_ACTIVE_BACKEND"] = active_backend
         if profile.dlss_metalfx:
             dll_overrides.setdefault("nvngx", "n,b")
-            dll_overrides.setdefault("_nvngx", "n,b")
             dll_overrides.setdefault("nvapi64", "n,b")
 
     elif active_backend == "dxmt":
@@ -134,7 +152,10 @@ def build_execution_environment(
 
     # 3. Apply per-game environment overrides last so profile specifics take precedence
     env.update(profile.env)
-    env["WINEDLLOVERRIDES"] = format_winedlloverrides(dll_overrides)
+    if dll_overrides:
+        env["WINEDLLOVERRIDES"] = format_winedlloverrides(dll_overrides)
+    else:
+        env.pop("WINEDLLOVERRIDES", None)
     return env
 
 
@@ -143,52 +164,25 @@ def stage_backend_dlls_into_prefix(
     backend_override: str | None = None,
     dry_run: bool = False,
 ) -> list[str]:
-    """Stage D3DMetal or DXMT DLLs into the target Wine prefix system32 directory."""
+    """Stage backend DLLs into the prefix. Never writes into the GPTK runtime itself."""
     active_backend = backend_override or profile.backend
-    sys32_dir = profile.prefix_path / "drive_c" / "windows" / "system32"
-    syswow64_dir = profile.prefix_path / "drive_c" / "windows" / "syswow64"
+    prefix_path = profile.prefix_path_for(active_backend)
+    sys32_dir = prefix_path / "drive_c" / "windows" / "system32"
+    syswow64_dir = prefix_path / "drive_c" / "windows" / "syswow64"
     actions: list[str] = []
 
     if active_backend in ("d3dmetal", "d3dmetal_gptk4"):
-        source_dirs = [
-            D3DMETAL_SDK_DIR / "wine" / "x86_64-windows",
-            D3DMETAL_SDK_DIR / "windows" / "system32",
-            D3DMETAL_SDK_DIR,
-        ]
-        dll_names = [
-            "d3d10.dll",
-            "d3d11.dll",
-            "d3d12.dll",
-            "d3d12core.dll",
-            "dxgi.dll",
-            "nvapi64.dll",
-            "nvngx.dll",
-            "nvngx-on-metalfx.dll",
-            "_nvngx.dll",
-        ]
-        for dll in dll_names:
-            for sdir in source_dirs:
-                src = sdir / dll
+        # Apple's Read Me: copy nvngx.dll and nvapi64.dll into system32 to enable DLSS -> MetalFX.
+        # Only DLSS titles need it; the builtin D3D DLLs come straight from the runtime.
+        if profile.dlss_metalfx:
+            runtime_win_dir = RUNTIME_DIRS["gptk"] / "lib" / "wine" / "x86_64-windows"
+            for dll in ("nvngx.dll", "nvapi64.dll"):
+                src = runtime_win_dir / dll
                 if src.exists():
-                    dst = sys32_dir / dll
-                    actions.append(f"Stage D3DMetal {src.name} -> {dst}")
+                    actions.append(f"Stage D3DMetal {dll} (DLSS -> MetalFX) -> {sys32_dir / dll}")
                     if not dry_run:
                         sys32_dir.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
-                        # Also alias nvngx-on-metalfx.dll -> nvngx.dll & _nvngx.dll for DLSS games
-                        if dll == "nvngx-on-metalfx.dll":
-                            shutil.copy2(src, sys32_dir / "nvngx.dll")
-                            shutil.copy2(src, sys32_dir / "_nvngx.dll")
-                    break
-
-        # Also stage GPTK unix .so bridges into Wine's lib/wine/x86_64-unix if present
-        unix_src_dir = D3DMETAL_SDK_DIR / "wine" / "x86_64-unix"
-        wine_unix_dst = WINE_SDK_DIR / "lib" / "wine" / "x86_64-unix"
-        if unix_src_dir.exists() and wine_unix_dst.exists():
-            for so_file in sorted(unix_src_dir.glob("*.so")):
-                actions.append(f"Stage D3DMetal Unix bridge {so_file.name} -> {wine_unix_dst / so_file.name}")
-                if not dry_run:
-                    shutil.copy2(so_file, wine_unix_dst / so_file.name)
+                        shutil.copy2(src, sys32_dir / dll)
 
     elif active_backend == "dxmt":
         # 3Shain/dxmt builtin archive provides x86_64-windows, i386-windows, and x86_64-unix
@@ -227,7 +221,8 @@ def stage_backend_dlls_into_prefix(
                         shutil.copy2(src, dst)
                     break
 
-        wine_unix_dst = WINE_SDK_DIR / "lib" / "wine" / "x86_64-unix"
+        # DXMT's winemetal.so belongs to the staging runtime (it needs __wine_unix_call_dispatcher)
+        wine_unix_dst = RUNTIME_DIRS["staging"] / "lib" / "wine" / "x86_64-unix"
         for sdir in unix_src_dirs:
             wm_so = sdir / "winemetal.so"
             if wm_so.exists() and wine_unix_dst.exists():

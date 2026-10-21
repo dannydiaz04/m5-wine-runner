@@ -7,8 +7,10 @@ from pathlib import Path
 import tomllib
 
 from m5runner.config import (
+    BACKEND_RUNTIME,
     PREFIXES_DIR,
     PROFILES_PATH,
+    RUNTIME_PREFIXES,
     STEAM_COMMON_DIR,
 )
 
@@ -23,7 +25,7 @@ class GameProfile:
     engine: str
     backend: str
     alt_backends: list[str] = field(default_factory=list)
-    prefix: str = "default_prefix"
+    prefix: str | None = None  # None -> the default prefix of the backend's Wine runtime
     steam_app_id: int | None = None
     exe_rel_paths: list[str] = field(default_factory=list)
     dx11_exe_rel_path: str | None = None
@@ -39,13 +41,20 @@ class GameProfile:
 
     @property
     def prefix_path(self) -> Path:
-        return PREFIXES_DIR / self.prefix
+        return self.prefix_path_for(self.backend)
 
-    def candidate_install_dirs(self) -> list[Path]:
+    def prefix_path_for(self, backend: str | None = None) -> Path:
+        """Prefix for the given backend; an explicit profile prefix always wins."""
+        if self.prefix:
+            return PREFIXES_DIR / self.prefix
+        return PREFIXES_DIR / RUNTIME_PREFIXES[BACKEND_RUNTIME[backend or self.backend]]
+
+    def candidate_install_dirs(self, backend: str | None = None) -> list[Path]:
         """Return candidate directories where the game may be installed."""
         candidates: list[Path] = []
+        prefix_path = self.prefix_path_for(backend)
         pfx_steam = (
-            self.prefix_path
+            prefix_path
             / "drive_c"
             / "Program Files (x86)"
             / "Steam"
@@ -55,7 +64,7 @@ class GameProfile:
         for root in (
             pfx_steam,
             STEAM_COMMON_DIR,
-            self.prefix_path / "drive_c" / "Games",
+            prefix_path / "drive_c" / "Games",
             Path.home() / "Games" / "installs",
         ):
             if not root.exists():
@@ -65,11 +74,11 @@ class GameProfile:
                     candidates.append(child)
         return candidates
 
-    def find_game_dir(self, explicit_dir: Path | None = None) -> Path | None:
+    def find_game_dir(self, explicit_dir: Path | None = None, backend: str | None = None) -> Path | None:
         """Locate the game root directory by checking candidate paths for known executables."""
         if explicit_dir and explicit_dir.exists():
             return explicit_dir
-        for candidate in self.candidate_install_dirs():
+        for candidate in self.candidate_install_dirs(backend):
             for rel_exe in self.exe_rel_paths:
                 if (candidate / rel_exe).exists():
                     return candidate
@@ -82,7 +91,7 @@ class GameProfile:
     ) -> Path:
         """Resolve the target Windows executable path for the chosen backend."""
         active_backend = backend_override or self.backend
-        game_dir = self.find_game_dir(explicit_dir)
+        game_dir = self.find_game_dir(explicit_dir, backend=active_backend)
 
         # Special dual-executable handling for The Witcher 3 (DX11 via DXMT vs DX12 via D3DMetal)
         if active_backend == "dxmt" and self.dx11_exe_rel_path:
@@ -102,7 +111,7 @@ class GameProfile:
         # Fallback canonical path inside the Wine prefix Steam folder
         default_dir_name = self.name.replace(":", "").strip()
         return (
-            self.prefix_path
+            self.prefix_path_for(active_backend)
             / "drive_c"
             / "Program Files (x86)"
             / "Steam"
@@ -133,7 +142,7 @@ def load_profiles(profiles_file: Path = PROFILES_PATH) -> dict[str, GameProfile]
             engine=data["engine"],
             backend=backend,
             alt_backends=list(data.get("alt_backends", [])),
-            prefix=data.get("prefix", "default_prefix"),
+            prefix=data.get("prefix"),
             steam_app_id=data.get("steam_app_id"),
             exe_rel_paths=list(data.get("exe_rel_paths", [])),
             dx11_exe_rel_path=data.get("dx11_exe_rel_path"),

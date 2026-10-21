@@ -8,26 +8,25 @@ This document explains the low-level mechanics of how `m5-wine-runner` bridges W
 
 On 16GB–32GB Apple Silicon Macs, translation layer engineering is dominated by two failure modes:
 1. **D3DMetal Residency Set & Descriptor Heap Leaks**: Titles like *Star Wars Jedi: Survivor*, *Horizon Forbidden West*, and *Red Dead Redemption 2* allocate unbounded Metal heaps across transitions, climbing past 24GB–32GB and triggering macOS jetsam/swap crashes. With **128GB of unified memory**, the M5 Max absorbs multi-hour sessions without swapping while `m5runner` flushes `wineserver -k` post-exit.
-2. **CPU Thread Contention on Draw-Call Submission**: The 16-core M5 Max CPU requires Mach semaphore synchronization (`WINEMSYNC=1`, `WINEESYNC=0`) so x86_64 worker threads translated by Rosetta 2 do not spin-wait on `wineserver` socket calls.
+2. **CPU Thread Contention on Draw-Call Submission**: Rosetta-translated worker threads should not round-trip to `wineserver` for every sync call. GPTK Wine 7.7 implements esync (`WINEESYNC=1`, set automatically for D3DMetal titles); it has no msync, so `WINEMSYNC` is a no-op there.
 
 ---
 
 ## 2. How the Three Graphics Translation Layers Work
 
 ### Backend A: Apple D3DMetal (`d3dmetal` / `d3dmetal_gptk4`)
-Extracted from Apple's **Game Porting Toolkit 4.0 Beta 3+** (`Evaluation environment for Windows games 4.0 beta 3.dmg`) into `~/Games/sdk/d3dmetal`:
-- **Host Metal Framework (`external/`)**:
-  - `D3DMetal.framework/Versions/A/D3DMetal`
-  - `D3DMetal.framework/Versions/A/Libraries/libd3dmetal.dylib`
-  - `libd3dshared.dylib`
-- **Wine Unix Bridges (`wine/x86_64-unix/`)**:
-  - `d3d10.so`, `d3d11.so`, `d3d12.so`, `d3d12core.so`, `dxgi.so`, `nvapi64.so`, `nvngx-on-metalfx.so`
-- **Windows PE Stubs (`wine/x86_64-windows/`)**:
-  - `d3d10.dll`, `d3d11.dll`, `d3d12.dll`, `d3d12core.dll`, `dxgi.dll`, `nvapi64.dll`, `nvngx-on-metalfx.dll`
+D3DMetal ships inside Apple's patched GPTK Wine, installed by `m5runner bootstrap` from Gcenx's `game-porting-toolkit` 3.0-3 into `~/Games/sdk/wine-gptk` (Wine 7.7, D3DMetal 3.0):
+- **Host Metal Framework (`lib/external/`)**: `D3DMetal.framework`, `libd3dshared.dylib`
+- **Wine Unix Bridges (`lib/wine/x86_64-unix/`)**: `d3d10.so`, `d3d11.so`, `d3d12.so`, `dxgi.so`, `nvapi64.so`, `nvngx.so`, symlinks to `../../external/libd3dshared.dylib` (found through its `@loader_path` rpath)
+- **Windows PE Stubs (`lib/wine/x86_64-windows/`)**: Wine's builtin `d3d10.dll`, `d3d11.dll`, `d3d12.dll`, `dxgi.dll` *are* the D3DMetal stubs, so no DLL overrides are needed.
+
+GPTK Wine's `ntdll.so` also loads `libd3dshared.dylib` to register Rosetta non-native code regions. Stock Wine has no such hook, which is one reason D3DMetal crashes on stock Wine Staging.
+
+`m5runner import-gptk` can extract newer Apple DMGs (e.g. 4.0 beta 3) into `~/Games/sdk/d3dmetal`, but they are **not** staged: GPTK 4's PE stubs call `GetProcAddress(ntdll, "__wine_unix_call_dispatcher")` in `__wine_init_unix_call` and fail `DllMain` with `0xC0000135` on GPTK Wine 7.7, which only exports the older `__wine_unix_call`. Apple's Read Me documents CrossOver's `lib64/apple_gptk` as a host that accepts them.
 
 #### How DLSS-to-MetalFX Translation Works
 When `dlss_metalfx = true` is set on a profile:
-1. `m5runner` stages `nvngx-on-metalfx.dll` into `drive_c/windows/system32/` as `nvngx-on-metalfx.dll`, `nvngx.dll`, and `_nvngx.dll`, plus `nvngx-on-metalfx.so` into Wine's `x86_64-unix` library folder.
+1. `m5runner` copies GPTK Wine's `nvngx.dll` and `nvapi64.dll` into the prefix's `drive_c/windows/system32/` (Apple's documented step); the runtime itself is never modified.
 2. `spoof_nvidia_dlss_registry` writes the NVIDIA GeForce RTX 4090 PCI ID (`VEN_10DE&DEV_2684`) and `HKLM\Software\NVIDIA Corporation\Global\NGXCore` keys into the prefix registry.
 3. `D3DM_ENABLE_METALFX=1` redirects the game's `NVSDK_NGX_D3D12_Init` and `EvaluateFeature` calls directly into Apple's `MTLFXTemporalScaler` and `MTL4FXFrameInterpolator` on the M5 Max GPU.
 

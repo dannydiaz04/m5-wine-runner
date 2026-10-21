@@ -21,7 +21,7 @@ This document is the authoritative guide for both human engineers and AI coding 
 ├── src/m5runner/
 │   ├── config.py                   # Paths & M5 Max base environment variables
 │   ├── profiles.py                 # TOML parser, GameProfile model, binary discovery
-│   ├── backends.py                 # D3DMetal 4 / DXMT / MoltenVK-RT / XIVMac router
+│   ├── backends.py                 # Per-backend runtime/prefix router (D3DMetal / DXMT / MoltenVK-RT / XIVMac)
 │   ├── patchers.py                 # Idempotent per-game bypasses, XML/INI & registry hooks
 │   ├── bootstrap.py                # Doctor, Wine/DXMT/Steam installer, nested GPTK DMG extractor
 │   ├── app_generator.py            # macOS ~/Applications/<Game>.app bundle generator
@@ -31,16 +31,31 @@ This document is the authoritative guide for both human engineers and AI coding 
 
 ~/Games/                            # Local runtime root (untracked, managed by `m5runner`)
 ├── prefixes/
-│   ├── default_prefix/             # 64-bit Windows 11 prefix (DX11 / DX12 / Vulkan titles)
+│   ├── gptk_prefix/                # Windows 10 prefix owned by GPTK Wine (all D3DMetal titles)
+│   ├── default_prefix/             # Windows 10 prefix owned by Wine Staging (DXMT / Vulkan titles)
 │   └── legacy_wow64/               # 32-bit/64-bit WoW64 prefix (DMC4 / legacy WMV titles)
 ├── sdk/
-│   ├── wine/                       # Gcenx Wine Staging 11.x (WoW64 + Mach msync)
-│   ├── d3dmetal/                   # Apple Game Porting Toolkit 4.0+ (D3DMetal.framework + MetalFX)
+│   ├── wine-gptk/                  # Apple GPTK Wine 7.7 (Gcenx game-porting-toolkit 3.0-3) + bundled D3DMetal 3.0
+│   ├── wine-staging/               # Gcenx Wine Staging 11.x (hosts DXMT / MoltenVK)
+│   ├── d3dmetal/                   # Imported GPTK DMG contents (reference only; never staged into a runtime)
+│   ├── compat-fixes/               # Local workaround DLLs (e.g. native-marked bcrypt.dll for Steam)
 │   ├── dxmt/                       # 3Shain/dxmt v0.80+ (Native DirectX 10/11 -> Metal)
 │   └── moltenvk-rt/                # Isolated custom libMoltenVK.dylib with HW Ray Tracing
 ├── mods_cache/                     # Downloaded mod/bypass payloads (e.g., REFramework dinput8.dll)
 └── logs/                           # Per-game execution logs (<slug>.log)
 ```
+
+---
+
+## Hard rules (each one was learned by breaking it)
+
+1. **One runtime per backend family, one prefix per runtime.** D3DMetal runs only in GPTK Wine; DXMT runs only in Wine Staging. Never run a prefix with a different Wine than the one that created it.
+2. **Never copy D3DMetal (or any GPTK DMG contents) into a Wine runtime.** GPTK 4.0 beta bridge DLLs need ntdll's `__wine_unix_call_dispatcher`, which GPTK Wine 7.7 lacks (`d3d12.dll failed to initialize`). GPTK Wine already ships a matching D3DMetal.
+3. **No D3D overrides for D3DMetal.** GPTK Wine's builtin `d3d11`/`d3d12`/`dxgi` *are* D3DMetal; the runner strips `d3d1x`/`dxgi` overrides on that backend.
+4. **No Steam emulators** (gbe_fork/Goldberg). Games that call `SteamAPI_Init()` need the real Windows Steam client running in the same prefix. See the README "Known issue" for its current status on GPTK Wine 7.7.
+5. **Verify with a real launch before declaring success.** `--dry-run` and unit tests only check strings.
+
+See README → [Runtimes](README.md#runtimes) for the binary-level evidence behind rules 1–3.
 
 ---
 
@@ -57,7 +72,7 @@ If `wine`, `winetricks`, or `dxmt` show `[WARN]`:
 ```bash
 m5runner bootstrap
 ```
-If `d3dmetal` shows `[WARN]`, import Apple's Game Porting Toolkit 4.0+ DMG (supports both outer `Game_Porting_Toolkit_*.dmg` with a nested Evaluation Environment DMG and direct `Evaluation environment*.dmg` files):
+`d3dmetal` reports the D3DMetal bundled with GPTK Wine; if it shows `[WARN]`, `m5runner bootstrap` installs GPTK Wine. Importing an Apple GPTK DMG is optional and for reference only (the imported files are not used by the runner):
 ```bash
 m5runner import-gptk ~/Downloads/Game_Porting_Toolkit_4.0_beta_3.dmg
 ```
@@ -71,11 +86,12 @@ Because macOS Steam cannot download Windows-only depots natively, use either:
    ```
    - Forces `+sSteamCmdForcePlatformType windows`.
    - Installs directly into `~/Games/prefixes/<prefix>/drive_c/Program Files (x86)/Steam/steamapps/common/<Game Name>`.
-2. **Windows Steam Client GUI inside the Prefix**:
+2. **Windows Steam Client inside the game's prefix**:
    ```bash
-   m5runner steam
+   m5runner steam <game-slug>
    ```
-   - Installs `SteamSetup.exe` if missing, or launches `steam.exe` with `-cef-disable-gpu-compositing -no-cef-sandbox` so Steam's Chromium UI never black-screens under Wine.
+   - Creates the prefix with the right runtime if needed, silently installs `SteamSetup.exe`, then starts `steam.exe` in the background (`-cef-disable-gpu-compositing -no-cef-sandbox`, log at `~/Games/logs/steam.log`).
+   - Steam must stay running and signed in while games that call `SteamAPI_Init()` are played. On GPTK Wine 7.7 this is currently blocked (README "Known issue").
 
 ### Step 4: Patch & Launch (`patch`, `launch`, `create-apps`)
 ```bash
@@ -103,7 +119,7 @@ When asked to add or port a new Windows game to `m5-wine-runner`, follow this ex
 ### Phase 1: Classify the Game's Technical Profile
 Determine the following 5 attributes before writing any config:
 1. **Graphics API & Engine**:
-   - **DirectX 12** (UE4, UE5, RE Engine, Decima, REDengine 4, RAGE, FromSoftware DX12) $\rightarrow$ Use `backend = "d3dmetal"` (or `"d3dmetal_gptk4"` if the engine uses advanced SM6.6+ compute shaders, DirectStorage, or heavy fast-travel streaming like Decima / RE Engine *MH Wilds*).
+   - **DirectX 12** (UE4, UE5, RE Engine, Decima, REDengine 4, RAGE, FromSoftware DX12) $\rightarrow$ Use `backend = "d3dmetal"` (or `"d3dmetal_gptk4"` to mark titles that would benefit from D3DMetal 4, e.g. Decima / RE Engine *MH Wilds*; it currently runs on the bundled D3DMetal 3 because GPTK 4 needs a newer Wine).
    - **DirectX 10 / DirectX 11** (FromSoftware DX11, REDengine DX11, MT Framework DX10) $\rightarrow$ Use `backend = "dxmt"` (`3Shain/dxmt` native Metal backend, which significantly outperforms D3DMetal in CPU-bound DX11 draw-call submission).
    - **32-bit (`i386`) Legacy DirectX 9 / 10 + WMV Cutscenes** $\rightarrow$ Use `prefix = "legacy_wow64"`, `backend = "dxmt"`, and `winetricks = ["wmp11", "quartz", "devenum"]`.
    - **Vulkan with Mandatory Hardware Ray Tracing** (`VK_KHR_ray_query` / `VK_KHR_ray_tracing_pipeline`, e.g. id Tech 8) $\rightarrow$ Use `backend = "moltenvk_rt"`.
@@ -127,9 +143,9 @@ Add a new `[games.<slug>]` block in [profiles/games.toml](file:///Users/danieldi
 name = "Example Game"
 tier = "Tier 2: Medium Lift"
 engine = "Unreal Engine 5 (DX12)"
-backend = "d3dmetal_gptk4"
-alt_backends = ["d3dmetal"]
-prefix = "default_prefix"
+backend = "d3dmetal"
+alt_backends = ["d3dmetal_gptk4"]
+# prefix omitted: defaults to the backend runtime's prefix (gptk_prefix for D3DMetal)
 steam_app_id = 1234560
 exe_rel_paths = [
     "ExampleGame/Binaries/Win64/ExampleGame-Win64-Shipping.exe",
@@ -139,7 +155,7 @@ launch_args = ["-dx12"]
 winetricks = ["vcrun2022"]
 dlss_metalfx = true
 require_avx = true
-dll_overrides = { d3d12 = "n,b", dxgi = "n,b", nvngx = "n,b" }
+dll_overrides = { nvngx = "n,b" }  # never d3d1x/dxgi on D3DMetal
 env = { ROSETTA_ADVERTISE_AVX = "1" }
 hooks = ["spoof_nvidia_dlss_registry"]
 notes = "Explanation of backend choice and required bypasses."
@@ -165,4 +181,4 @@ m5runner launch <new-game-slug> --dry-run
 ```
 Ensure all unit tests pass and update `EXPECTED_14_SLUGS` (or profile tests) in [tests/test_runner.py](file:///Users/danieldiaz/projects/m5-wine-runner/tests/test_runner.py).
 
-For deep technical details on how `D3DMetal 4.0`, `DXMT`, and `MoltenVK-RT` work under the hood, read [docs/PORTING_GUIDE.md](file:///Users/danieldiaz/projects/m5-wine-runner/docs/PORTING_GUIDE.md).
+For deep technical details on how `D3DMetal`, `DXMT`, and `MoltenVK-RT` work under the hood, read [docs/PORTING_GUIDE.md](file:///Users/danieldiaz/projects/m5-wine-runner/docs/PORTING_GUIDE.md).
